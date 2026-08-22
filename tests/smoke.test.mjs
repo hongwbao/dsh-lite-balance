@@ -26,9 +26,19 @@ const effects = [];
 const fakeWebServer = {
   register(route) { routes.push(route); return () => { const i = routes.indexOf(route); if (i >= 0) routes.splice(i, 1); }; },
 };
+const fakeCredentials = { resolve: async () => undefined };
 const fakeCtx = {
   inject(list, cb) {
-    cb({ webServer: fakeWebServer, effect: (fn, label) => { const d = fn(); effects.push({ fn, label, d }); } });
+    cb({
+      webServer: fakeWebServer,
+      credentials: fakeCredentials,
+      get: (service) => (service === 'credentials' ? fakeCredentials : undefined),
+      effect: (fn, label) => { const d = fn(); effects.push({ fn, label, d }); },
+    });
+  },
+  get(service) {
+    if (service === 'credentials') return fakeCredentials;
+    return undefined;
   },
 };
 const mod = await import('../packages/dsh-lite-balance/lib/index.js');
@@ -42,7 +52,20 @@ const call = (req) => {
   return route.handler(req, res).then(() => ({ status: res.status, body: JSON.parse(res.body) }));
 };
 let out = await call({ method: 'GET', url: '/dsh-lite-balance/balance' });
-assert(out.status === 503 && out.body.code === 'missing-api-key', 'missing key -> 503 missing-api-key');
+assert(out.status === 503 && out.body.code === 'missing-api-key', 'unconfigured key -> 503 missing-api-key');
+
+// Credentials service supplies the key -> the request proceeds to the
+// network (no internet in this sandbox) -> 502 fetch-failed, NOT missing-key.
+fakeCredentials.resolve = async () => ({ value: 'sk-test', source: 'file' });
+out = await call({ method: 'GET', url: '/dsh-lite-balance/balance?refresh=1' });
+assert(out.status === 502 && (out.body.code === 'api-error' || out.body.code === 'fetch-failed'), 'credentials-supplied key reaches the DeepSeek fetch (401 or offline)');
+
+// Plain environment variable still works when no credentials service value.
+fakeCredentials.resolve = async () => undefined;
+process.env.DEEPSEEK_API_KEY = 'sk-env';
+out = await call({ method: 'GET', url: '/dsh-lite-balance/balance?refresh=1' });
+assert(out.status === 502 && (out.body.code === 'api-error' || out.body.code === 'fetch-failed'), 'env fallback key reaches the DeepSeek fetch (401 or offline)');
+delete process.env.DEEPSEEK_API_KEY;
 
 out = await call({ method: 'POST', url: '/dsh-lite-balance/balance' });
 assert(out.status === 405, 'non-GET -> 405');

@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
       updatedAt: "更新于 {time}",
       clickRechargeHint: "点击打开充值页 · 双击强制刷新",
       retryHint: "点击重试",
-      missingKey: "未配置 DEEPSEEK_API_KEY（需在 host 环境变量中设置）",
+      missingKey: "未配置 DEEPSEEK_API_KEY（在 host 环境变量或 ~/.dsh/.credentials.yaml 中设置）",
       fetchFailed: "余额获取失败",
       lowBalance: "余额不足 {threshold}",
       toastTitle: "余额不足",
@@ -53,7 +53,7 @@ window.__ModuleLoader__.load({
       updatedAt: "Updated {time}",
       clickRechargeHint: "Click to top up · double-click to refresh",
       retryHint: "Click to retry",
-      missingKey: "DEEPSEEK_API_KEY not set (set it on the host process)",
+      missingKey: "DEEPSEEK_API_KEY not configured (set it in ~/.dsh/.credentials.yaml or host env)",
       fetchFailed: "Failed to fetch balance",
       lowBalance: "Low balance: under {threshold}",
       toastTitle: "Low balance",
@@ -62,7 +62,7 @@ window.__ModuleLoader__.load({
     };
 
     // ---------- tiny shared store (chip and toast stay in sync) ----------
-    var store = { phase: "loading", data: null, error: null };
+    var store = { phase: "loading", data: null, error: null, code: null };
     var listeners = new Set();
     function setStore(patch) {
       Object.assign(store, patch);
@@ -114,7 +114,10 @@ window.__ModuleLoader__.load({
     }
     function tooltipOf(t, state) {
       if (state.phase === "error") {
-        return (state.error || t("fetchFailed")) + " · " + t("retryHint");
+        var text = state.code === "missing-api-key" ? t("missingKey")
+          : state.code === "fetch-failed" ? t("fetchFailed")
+          : (state.error || t("fetchFailed"));
+        return text + " · " + t("retryHint");
       }
       if (!state.data) return t("loading");
       var d = state.data;
@@ -165,10 +168,10 @@ window.__ModuleLoader__.load({
             if (json.meta && json.meta.refreshMs) refreshMsRef.current = json.meta.refreshMs;
             setStore({ phase: "ready", data: json, error: null });
           } else {
-            setStore({ phase: "error", data: null, error: (json && json.message) || "unknown" });
+            setStore({ phase: "error", data: null, error: (json && json.message) || "unknown", code: json && json.code });
           }
         }).catch(function (err) {
-          setStore({ phase: "error", data: null, error: String((err && err.message) || err) });
+          setStore({ phase: "error", data: null, error: String((err && err.message) || err), code: "fetch-failed" });
         }).finally(function () {
           inFlightRef.current = false;
         });

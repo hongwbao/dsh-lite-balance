@@ -26,18 +26,22 @@ dsh plugin --profile web add ./packages/dsh-lite-balance
 
 ## 配置
 
-### 必需：API Key（host 环境变量）
+### API Key（自动复用 harness 的配置，无需额外设置）
 
-```bash
-export DEEPSEEK_API_KEY=sk-xxxxxxxx
-dsh web   # 在带该环境变量的终端里启动
-```
+插件通过 harness 自身的 credentials 服务（`ctx.credentials`）解析 key，
+与 harness 完全同一条解析链：
+
+1. 进程环境变量 `DEEPSEEK_API_KEY`
+2. `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`（即 harness 里配好的 key）
+3. `.env` 文件
+
+所以**只要 harness 本身能正常调用模型，插件就自动有 key，不需要任何额外配置**。
+仅当你想用另一个账号时，才需要显式设置环境变量来覆盖。
 
 可选环境变量（优先级：patch 配置 > 环境变量 > 默认值）：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | 无（必填） | DeepSeek 平台 API Key |
 | `DEEPSEEK_BALANCE_WARN_THRESHOLD` | `10` | 低于此值 chip 变警告色 |
 | `DEEPSEEK_BALANCE_CRITICAL_THRESHOLD` | `3` | 低于此值 chip 变危险色并 toast 提醒 |
 | `DEEPSEEK_BALANCE_RECHARGE_URL` | `https://platform.deepseek.com/top_up` | 点击 chip 跳转的充值地址 |

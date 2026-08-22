@@ -6,8 +6,10 @@
  *   GET /dsh-lite-balance/balance            => cached balance (host TTL)
  *   GET /dsh-lite-balance/balance?refresh=1  => bypass cache, fetch fresh
  *
- * The API key is read from the DEEPSEEK_API_KEY environment variable on the
- * HOST process (never sent to the browser). Optional overrides:
+ * The API key is resolved through the harness's own credentials service
+ * (`ctx.credentials`), i.e. the same chain the harness uses: process
+ * environment -> $DSH_HOME/.credentials.yaml (refs.DEEPSEEK_API_KEY) -> .env
+ * files. The value never reaches the browser. Optional overrides:
  *   DEEPSEEK_BALANCE_WARN_THRESHOLD     (number, default 10)
  *   DEEPSEEK_BALANCE_CRITICAL_THRESHOLD (number, default 3)
  *   DEEPSEEK_BALANCE_RECHARGE_URL       (string, default DeepSeek platform)
@@ -74,6 +76,31 @@ function resolveSettings(config) {
   };
 }
 
+/**
+ * Resolve the DeepSeek API key exactly the way the harness itself does.
+ *
+ * The web profile mounts a credentials provider (dsh-credentials-local) as
+ * `ctx.credentials`; `resolve('DEEPSEEK_API_KEY')` layers the process
+ * environment, then `$DSH_HOME/.credentials.yaml` (refs:), then .env files —
+ * the same chain the harness's own LLM providers use. No service mounted
+ * (foreign profile / tests): fall back to the plain environment variable.
+ *
+ * @param credentials - the optional `ctx.credentials` service.
+ * @returns the key, or undefined when nowhere configured.
+ */
+async function resolveApiKey(credentials) {
+  if (credentials && typeof credentials.resolve === 'function') {
+    try {
+      const resolved = await credentials.resolve('DEEPSEEK_API_KEY');
+      if (resolved && typeof resolved.value === 'string' && resolved.value !== '') return resolved.value;
+    } catch {
+      // credentials service error: degrade to the plain environment variable
+    }
+  }
+  const env = process.env.DEEPSEEK_API_KEY;
+  return env && env.trim() !== '' ? env.trim() : undefined;
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     'cache-control': 'no-store',
@@ -83,10 +110,9 @@ function sendJson(res, status, payload) {
 }
 
 /** One DeepSeek /user/balance call. Throws on missing key / HTTP / timeout. */
-async function fetchBalanceOnce() {
-  const key = process.env.DEEPSEEK_API_KEY;
+async function fetchBalanceOnce(key) {
   if (!key || key.trim() === '') {
-    const error = new Error('DEEPSEEK_API_KEY environment variable is not set on the host process');
+    const error = new Error('DEEPSEEK_API_KEY is not configured — set it in ~/.dsh/.credentials.yaml (refs.DEEPSEEK_API_KEY) or as an environment variable on the host');
     error.code = 'missing-api-key';
     throw error;
   }
@@ -135,7 +161,8 @@ export function apply(ctx, config) {
       const now = Date.now();
       if (force || cache === null || now - cache.at > HOST_CACHE_TTL_MS) {
         try {
-          const payload = await fetchBalanceOnce();
+          const key = await resolveApiKey(hostCtx.get('credentials'));
+          const payload = await fetchBalanceOnce(key);
           cache = { at: Date.now(), payload };
         } catch (error) {
           sendJson(res, error.code === 'missing-api-key' ? 503 : 502, {
