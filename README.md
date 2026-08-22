@@ -1,19 +1,26 @@
 # dsh-plugins
 
-自研 DSH（DeepSeek Harness）插件仓库。
+自研 DSH（DeepSeek Harness）插件仓库。 / A collection of self-built DSH (DeepSeek Harness) plugins.
 
-## 插件列表
+## 插件列表 / Plugins
 
-- [dsh-lite-balance](packages/dsh-lite-balance/) — 轻量余额显示器：侧边栏底部余额 chip、自动/手动刷新、低余额提醒、一键充值、中英双语、跟随主题
+- [dsh-lite-balance](packages/dsh-lite-balance/) — 轻量、可扩展的 DeepSeek 余额/消耗显示器；替换输入框下方统计条为用户可配置模块，逐笔计价、一键充值。 Lightweight, extensible DeepSeek balance & spend display; user-configurable stats-line modules, per-request pricing, click-to-top-up.
 
-## 通用安装方式
+## 通用安装 / Install
 
 ```bash
-dsh plugin --profile <profile> add <包路径或 npm 包名>
+dsh plugin --profile <profile> add <package-path-or-name>
 ```
 
-## 测试
+## 测试 / Tests
 
 ```bash
 node tests/smoke.test.mjs
+```
+
+## 目录 / Layout
+
+```text
+packages/dsh-lite-balance/   # the plugin package
+tests/                      # smoke tests
 ```

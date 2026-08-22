@@ -360,7 +360,6 @@ window.__ModuleLoader__.load({
       saveModuleConfig();
       notifyConfigChanged();
     }
-    /** Move one module to another position (drag & drop), renumbering order. */
     /** Move one module to an absolute index (live drag swap), renumbering order. */
     function moveModuleToIndex(id, toIndex) {
       var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return moduleConfig[a].order - moduleConfig[b].order; });
@@ -370,6 +369,58 @@ window.__ModuleLoader__.load({
       ids.splice(toIndex, 0, id);
       for (var i = 0; i < ids.length; i++) moduleConfig[ids[i]].order = (i + 1) * 10;
       saveModuleConfig();
+      notifyConfigChanged();
+    }
+
+    // ---------------------------------------------------------------------
+    // Extension API: third-party plugins register extra stat modules.
+    // ---------------------------------------------------------------------
+    var EXTRA_MODULES = [];
+    function getAllModules() { return STAT_MODULES.concat(EXTRA_MODULES); }
+    function moduleEnabled(cfg, m) { var c = cfg && cfg[m.id]; return c ? c.enabled !== false : true; }
+    function moduleOrder(cfg, m) { var c = cfg && cfg[m.id]; return (c && typeof c.order === "number") ? c.order : (typeof m.order === "number" ? m.order : 1000); }
+    function moduleName(ctx, m) {
+      if (m.label && typeof m.label === "function") return m.label(ctx);
+      if (m.labelKey && ctx && ctx.t) return ctx.t(m.labelKey);
+      return m.id;
+    }
+    function normalizeModule(def) {
+      return {
+        id: String(def && def.id),
+        labelKey: (def && def.labelKey) || null,
+        label: (def && typeof def.label === "function") ? def.label : null,
+        order: (def && typeof def.order === "number") ? def.order : 1000,
+        enabled: (def && typeof def.enabled === "function") ? def.enabled : function () { return true; },
+        render: (def && typeof def.render === "function") ? def.render : function () { return null; },
+        clickable: !!(def && def.clickable),
+        onClick: (def && typeof def.onClick === "function") ? def.onClick : null,
+        tooltip: (def && typeof def.tooltip === "function") ? def.tooltip : null,
+        style: (def && def.style) || null,
+      };
+    }
+    /**
+     * Public: register a stats sub-module. Requires { id, render }.
+     * Returns a disposer that unregisters it.
+     */
+    function registerModule(def) {
+      if (!def || typeof def.id !== "string" || def.id === "" || typeof def.render !== "function") {
+        throw new Error("dsh-lite-balance: registerModule requires { id: string, render: fn }");
+      }
+      var normalized = normalizeModule(def);
+      var i = EXTRA_MODULES.findIndex(function (m) { return m.id === normalized.id; });
+      if (i >= 0) EXTRA_MODULES[i] = normalized;
+      else {
+        EXTRA_MODULES.push(normalized);
+        if (!moduleConfig[normalized.id]) {
+          moduleConfig[normalized.id] = { enabled: true, order: 100 + EXTRA_MODULES.length };
+        }
+      }
+      saveModuleConfig();
+      notifyConfigChanged();
+      return function () { unregisterModule(normalized.id); };
+    }
+    function unregisterModule(id) {
+      EXTRA_MODULES = EXTRA_MODULES.filter(function (m) { return m.id !== id; });
       notifyConfigChanged();
     }
     function useModuleConfig() {
@@ -525,6 +576,9 @@ window.__ModuleLoader__.load({
         enabled: function (ctx) {
           return ctx.balance.phase === "ready" && ctx.balance.data && ctx.balance.data.total !== null;
         },
+        clickable: true,
+        onClick: function (ctx) { ctx.actions.openRecharge(); },
+        tooltip: function (ctx) { return walletTooltip(ctx); },
         render: function (ctx) {
           var d = ctx.balance.data;
           var st = ctx.statusOf(d.total, d.meta || {});
@@ -539,11 +593,7 @@ window.__ModuleLoader__.load({
           inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
           inner.push(h("span", { style: { color: color, fontWeight: 500 } },
             ctx.t("balance", { amount: sym + ctx.fmt(d.total) })));
-          return h("span", {
-            style: { cursor: "pointer" },
-            title: walletTooltip(ctx),
-            onClick: function () { ctx.actions.openRecharge(); },
-          }, inner);
+          return h("span", null, inner);
         },
       },
       {
@@ -576,7 +626,7 @@ window.__ModuleLoader__.load({
       var ctx = props.ctx;
       var cfg = props.cfg;
       var onClose = props.onClose;
-      var modules = STAT_MODULES.slice().sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
+      var modules = getAllModules().slice().sort(function (a, b) { return moduleOrder(cfg, a) - moduleOrder(cfg, b); });
       var dragState = useState(null); // { id, index, startY, deltaY, step }
       var drag = dragState[0];
       var setDrag = dragState[1];
@@ -686,10 +736,10 @@ window.__ModuleLoader__.load({
           return h("div", { className: rowCls, key: m.id, style: rowStyle },
             h("input", {
               type: "checkbox",
-              checked: cfg[m.id].enabled,
+              checked: moduleEnabled(cfg, m),
               onChange: function (e) { setModuleEnabled(m.id, e.target.checked); },
             }),
-            h("span", { className: "dsh-lb-settings-name" }, ctx.t(m.labelKey)),
+            h("span", { className: "dsh-lb-settings-name" }, moduleName(ctx, m)),
             h("span", {
               className: "dsh-lb-settings-drag",
               title: ctx.t("drag"),
@@ -710,6 +760,16 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Wrap a module's output with click + tooltip when the module declares them. */
+    function wrapClickable(ctx, m, seg) {
+      if (!m.clickable || !m.onClick) return seg;
+      return h("span", {
+        style: m.style || { cursor: "pointer" },
+        title: m.tooltip ? m.tooltip(ctx) : null,
+        onClick: function () { m.onClick(ctx); },
+      }, seg);
+    }
+
     // -----------------------------------------------------------------------
     // 8. orchestrator
     // -----------------------------------------------------------------------
@@ -720,9 +780,9 @@ window.__ModuleLoader__.load({
       var open = openState[0];
       var setOpen = openState[1];
 
-      var visible = STAT_MODULES
-        .filter(function (m) { return m.enabled(ctx) && cfg[m.id].enabled; })
-        .sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
+      var visible = getAllModules()
+        .filter(function (m) { return m.enabled(ctx) && moduleEnabled(cfg, m); })
+        .sort(function (a, b) { return moduleOrder(cfg, a) - moduleOrder(cfg, b); });
 
       var children = [];
       var pushSegment = function (seg) {
@@ -732,9 +792,10 @@ window.__ModuleLoader__.load({
         children.push(seg);
       };
       for (var i = 0; i < visible.length; i++) {
-        var seg = visible[i].render(ctx);
+        var mod = visible[i];
+        var seg = mod.render(ctx);
         if (seg === null || seg === undefined) continue;
-        pushSegment(seg);
+        pushSegment(wrapClickable(ctx, mod, seg));
       }
       pushSegment(h("span", {
         className: "dsh-lb-gear",
@@ -815,7 +876,18 @@ window.__ModuleLoader__.load({
     exports.name = name;
     exports.inject = inject;
     exports.apply = apply;
-    exports._test = { deriveCounts, deriveStats, formatTokens, formatDuration, formatTokensPerSecond, cacheHitPercent, fmtMoney, isPeak, statusOf, fmt, symbolOf };
+    // Public extension API (also exposed on window for cross-plugin use).
+    exports.registerModule = registerModule;
+    exports.getModules = getAllModules;
+    exports._test = { deriveCounts, deriveStats, formatTokens, formatDuration, formatTokensPerSecond, cacheHitPercent, fmtMoney, isPeak, statusOf, fmt, symbolOf, moduleEnabled, moduleOrder };
+    if (typeof window !== "undefined") {
+      try {
+        window.__DSH_LITE_BALANCE__ = {
+          registerModule: registerModule,
+          getModules: getAllModules,
+        };
+      } catch (err) { /* non-browser environment */ }
+    }
     return module.exports;
   }
 });

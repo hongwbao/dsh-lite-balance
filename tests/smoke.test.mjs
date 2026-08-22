@@ -143,6 +143,29 @@ assert(chip === undefined, 'sidebar footer chip registration removed');
 const stats = registrations.find((r) => r.opts.id === 'stats');
 assert(stats && stats.opts.name === 'conversation.composer.dock' && stats.opts.priority === -1 && typeof stats.comp === 'function', 'shadows built-in stats: composer.dock id "stats" at priority -1');
 
+console.log('== client: extension API ==');
+assert(typeof clientMod.registerModule === 'function' && typeof clientMod.getModules === 'function', 'registerModule/getModules exported');
+assert(globalThis.window.__DSH_LITE_BALANCE__ && typeof globalThis.window.__DSH_LITE_BALANCE__.registerModule === 'function', 'global window.__DSH_LITE_BALANCE__ exposed');
+assert(clientMod.getModules().length === 7, '7 built-in modules by default');
+const extId = 'ext-' + Date.now();
+const disposer = clientMod.registerModule({
+  id: extId,
+  labelKey: 'moduleTokens',
+  order: 5,
+  enabled: (ctx) => true,
+  render: (ctx) => ctx.t('statsTokens'),
+  clickable: true,
+  onClick: () => {},
+  tooltip: (ctx) => 'tip',
+});
+assert(clientMod.getModules().some((m) => m.id === extId), 'registered module appears in registry');
+const ext = clientMod.getModules().find((m) => m.id === extId);
+assert(ext.order === 5 && ext.clickable === true && typeof ext.onClick === 'function', 'module normalized fields');
+assert(clientMod._test.moduleEnabled({ [extId]: { enabled: false } }, ext) === false, 'moduleEnabled respects config');
+assert(clientMod._test.moduleOrder({ [extId]: { order: 9 } }, ext) === 9, 'moduleOrder respects config');
+disposer();
+assert(!clientMod.getModules().some((m) => m.id === extId), 'disposer unregisters the module');
+
 console.log('== client: shadow registration against runtime semantics ==');
 // Replicates the shipped SlotCore.register conflict check + entriesOfSlot
 // dedupe (extracted from dsh-web-frontend): same id at the same priority

@@ -1,7 +1,7 @@
 {
   "name": "dsh-lite-balance",
-  "version": "0.2.0",
-  "description": "Lightweight DeepSeek balance display for the dsh web GUI: replaces the composer stats line with turns/steps · cache hit · session tokens · session spend (per-request priced at arrival, persisted) + balance (status colored) · peak/idle, click-to-top-up. · 轻量余额显示器：替换输入框下方统计条为 轮次/步数 · 缓存命中 · Token 用量 · 会话消耗（逐笔计价、持久化）+ 余额 · 高峰/空闲，点击一键充值。",
+  "version": "0.3.0",
+  "description": "Lightweight, extensible DeepSeek balance display for the dsh web GUI. Replaces the composer stats line with user-configurable modules: turns/steps · duration · speed · cache hit · session tokens · spend+balance · peak/idle, per-request priced & persisted session spend, click-to-top-up. · 轻量、可扩展的 DSH 余额显示器：以可配置模块替换输入框下方统计条（轮次/步数 · 耗时 · 速率 · 缓存命中 · Token 用量 · 消耗+余额 · 高峰/空闲），会话消耗逐笔计价并持久化，点击一键充值。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -28,6 +28,9 @@
     "client",
     "cordis.patch.yml",
     "README.md",
+    "README.zh-CN.md",
+    "docs",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [
@@ -36,9 +39,21 @@
     "dsh",
     "dsh-plugin",
     "balance",
-    "余额"
+    "wallet",
+    "spend",
+    "余额",
+    "统计"
   ],
   "license": "MIT",
+  "author": "dsh-plugins contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/<your-org>/dsh-plugins.git"
+  },
+  "homepage": "https://github.com/<your-org>/dsh-plugins/tree/main/packages/dsh-lite-balance",
+  "bugs": {
+    "url": "https://github.com/<your-org>/dsh-plugins/issues"
+  },
   "engines": {
     "node": ">=20"
   }
