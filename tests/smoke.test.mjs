@@ -121,7 +121,43 @@ assert(typeof chip.opts.label === 'function' && chip.opts.label() === 'label', '
 assert(typeof chip.opts.inject().t === 'function', 'chip receives bound t');
 
 const stats = registrations.find((r) => r.opts.id === 'stats');
-assert(stats && stats.opts.name === 'conversation.composer.dock' && typeof stats.comp === 'function', 'replaces built-in stats: composer.dock id "stats" registered');
+assert(stats && stats.opts.name === 'conversation.composer.dock' && stats.opts.priority === -1 && typeof stats.comp === 'function', 'shadows built-in stats: composer.dock id "stats" at priority -1');
+
+console.log('== client: shadow registration against runtime semantics ==');
+// Replicates the shipped SlotCore.register conflict check + entriesOfSlot
+// dedupe (extracted from dsh-web-frontend): same id at the same priority
+// throws; the lowest-priority entry with a given id renders.
+function miniSlotRegistry() {
+  const entries = [];
+  return {
+    register(opts) {
+      const priority = opts.priority ?? 0;
+      const conflict = entries.find((e) => e.options.id === opts.id && (e.options.priority ?? 0) === priority);
+      if (conflict) throw new Error('list slot already has an entry with id ' + opts.id + ' at priority ' + priority);
+      entries.push({ options: opts });
+      entries.sort((a, b) => (a.options.priority ?? 0) - (b.options.priority ?? 0) || (a.options.order ?? 0) - (b.options.order ?? 0));
+      return () => {};
+    },
+    entriesOfSlot() {
+      const seen = new Set();
+      const out = [];
+      for (const e of entries) {
+        if (seen.has(e.options.id)) continue;
+        seen.add(e.options.id);
+        out.push(e);
+      }
+      return out;
+    },
+  };
+}
+const reg = miniSlotRegistry();
+reg.register({ name: 'conversation.composer.dock', id: 'stats', order: 0 }); // built-in at priority 0
+let threw = false;
+try { reg.register({ name: 'conversation.composer.dock', id: 'stats', order: 0 }); } catch { threw = true; }
+assert(threw, 'same id + same priority throws (the user-visible crash)');
+reg.register({ name: 'conversation.composer.dock', id: 'stats', priority: -1, order: 0 });
+const rendered = reg.entriesOfSlot();
+assert(rendered.length === 1 && rendered[0].options.priority === -1, 'priority -1 shadows built-in (lowest renders)');
 
 console.log('== client: stats-line helpers ==');
 const T = clientMod._test;

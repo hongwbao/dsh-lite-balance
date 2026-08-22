@@ -453,13 +453,16 @@ window.__ModuleLoader__.load({
         );
       });
 
-      // id "stats" is the shipped StatsLine cell — reusing it REPLACES the
-      // built-in stats line (replaceRisk: none per the slot contract).
+      // id "stats" is the shipped StatsLine cell. Same-id entries may coexist
+      // at DIFFERENT priorities, and the slot registry renders the LOWEST
+      // priority one (entriesOfSlot dedupes by id after ascending sort) — so
+      // priority -1 shadows the built-in (which sits at the default 0).
       ctx.slots.inject("conversation.composer.dock", function () {
         return ctx.slots.register(
           {
             name: "conversation.composer.dock",
             id: "stats",
+            priority: -1,
             order: 0,
             label: function () { return t("label"); },
             locale: NS,
