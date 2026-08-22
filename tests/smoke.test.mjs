@@ -208,6 +208,20 @@ assert(T.isPeak(peakMeta, new Date('2026-08-22T10:00:00+08:00')) === false, 'Sat
 assert(T.isPeak(peakMeta, new Date('2026-08-23T15:00:00+08:00')) === false, 'Sun 15:00 Beijing is idle all day (weekend)');
 assert(T.isPeak({}, new Date('2026-08-24T10:00:00+08:00')) === true, 'defaults to 09:00-12:00/14:00-18:00 when meta absent');
 
+console.log('== client: duration/speed helpers (native modules) ==');
+const dNodes = [
+  { kind: 'tool-result', callTime: 1000, time: 4000 },
+  { kind: 'assistant', turn: 0, timing: { stepStartTime: 0, firstTokenTime: 1000, completedTime: 5000 }, usage: { outputTokens: 200 } },
+  { kind: 'assistant', turn: 1, timing: { stepStartTime: 100, firstTokenTime: 200, completedTime: 1200 }, usage: { outputTokens: 100 } },
+];
+const ds = T.deriveStats(dNodes);
+assert(ds.steps === 2 && ds.turns === 2, 'deriveStats counts steps/turns');
+assert(ds.llmMs === 6100 && ds.toolMs === 3000, 'deriveStats sums llm/tool durations');
+assert(ds.ttftSteps === 2 && ds.ttftMs === 1100, 'deriveStats sums ttft readings');
+assert(ds.decodeMs === 5000 && ds.decodeTokens === 300, 'deriveStats sums decode time/tokens');
+assert(T.formatDuration(6100) === '6.1s' && T.formatDuration(709000) === '11m49s', 'formatDuration compact');
+assert(T.formatTokensPerSecond(141) === '141' && T.formatTokensPerSecond(7.5) === '7.5', 'formatTokensPerSecond');
+
 console.log('== host: per-event pricing (peak/off-peak, timeline) ==');
 const PEAK_MS = Date.UTC(2026, 7, 24, 2, 0, 0); // Mon 10:00 Beijing -> peak
 const IDLE_MS = Date.UTC(2026, 7, 24, 5, 0, 0); // Mon 13:00 Beijing -> idle

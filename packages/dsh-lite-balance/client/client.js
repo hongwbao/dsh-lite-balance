@@ -1,12 +1,11 @@
 /**
  * dsh-lite-balance client half (bundled for the dsh ModuleLoader).
  *
- * Modular stats line: one shared data context feeds a fixed registry of
- * self-contained display modules; a thin orchestrator filters, orders and
- * joins them. Each module owns its own visibility, rendering, click and
- * tooltip behavior.
- *
- *   context (useStatsContext)  ->  modules (STAT_MODULES)  ->  orchestrator
+ * Modular, user-configurable stats line:
+ *   - 7 self-contained display modules (5 native + wallet + peak/idle)
+ *   - a gear icon at the right opens a settings popup: toggle visibility and
+ *     reorder modules (persisted to localStorage)
+ *   - a thin orchestrator filters, orders and joins the enabled modules
  */
 window.__ModuleLoader__.load({
   id: "dsh-lite-balance",
@@ -23,6 +22,7 @@ window.__ModuleLoader__.load({
     var NS = "dsh-lite-balance";
     var API_PATH = "/dsh-lite-balance/balance";
     var DEFAULT_REFRESH_MS = 60000;
+    var CONFIG_KEY = "dsh-lite-balance.modules.v1";
 
     // -----------------------------------------------------------------------
     // 1. locale dictionaries
@@ -32,24 +32,48 @@ window.__ModuleLoader__.load({
       updatedAt: "更新于 {time}",
       clickRechargeHint: "点击打开充值页",
       statsCounts: "{turns} 轮 · {steps} 步",
+      toolCall: "工具调用",
+      ttftAvg: "首 token 平均",
       statsCacheHit: "缓存命中 {percent}%",
       statsTokens: "输入 {input} tok · 输出 {output} tok",
       spent: "消耗 {amount}",
       balance: "余额 {amount}",
       peak: "高峰",
       idle: "空闲",
+      settings: "模块设置",
+      moveUp: "上移",
+      moveDown: "下移",
+      moduleCounts: "轮次/步数",
+      moduleDuration: "耗时",
+      moduleSpeed: "速率",
+      moduleCacheHit: "缓存命中",
+      moduleTokens: "Token 用量",
+      moduleWallet: "钱包（消耗+余额）",
+      modulePeakIdle: "高峰/空闲",
     };
     var en = {
       label: "Balance",
       updatedAt: "Updated {time}",
       clickRechargeHint: "Click to top up",
       statsCounts: "{turns} turns · {steps} steps",
+      toolCall: "Tools",
+      ttftAvg: "TTFT avg",
       statsCacheHit: "Cache hit {percent}%",
       statsTokens: "In {input} tok · Out {output} tok",
       spent: "Spent {amount}",
       balance: "Balance {amount}",
       peak: "Peak",
       idle: "Off-peak",
+      settings: "Module settings",
+      moveUp: "Move up",
+      moveDown: "Move down",
+      moduleCounts: "Turns · Steps",
+      moduleDuration: "Duration",
+      moduleSpeed: "Speed",
+      moduleCacheHit: "Cache hit",
+      moduleTokens: "Tokens",
+      moduleWallet: "Wallet (spend+balance)",
+      modulePeakIdle: "Peak/Idle",
     };
 
     // -----------------------------------------------------------------------
@@ -119,16 +143,54 @@ window.__ModuleLoader__.load({
       if (total <= warn) return "warn";
       return "ok";
     }
-    function deriveCounts(nodes) {
+    function usageOutputTokens(usage) {
+      if (typeof usage !== "object" || usage === null) return null;
+      var value = usage.outputTokens;
+      return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+    }
+    function assistantStepReading(node) {
+      var timing = node.timing;
+      return {
+        ttftMs: timing !== undefined && timing.stepStartTime !== null && timing.firstTokenTime !== null
+          ? Math.max(0, timing.firstTokenTime - timing.stepStartTime) : null,
+        decodeMs: timing !== undefined && timing.firstTokenTime !== null
+          ? Math.max(0, timing.completedTime - timing.firstTokenTime) : null,
+        outputTokens: usageOutputTokens(node.usage),
+      };
+    }
+    function deriveStats(nodes) {
       var turns = new Set();
       var steps = 0;
+      var llmMs = 0;
+      var toolMs = 0;
+      var ttftMs = 0;
+      var ttftSteps = 0;
+      var decodeMs = 0;
+      var decodeTokens = 0;
       for (var i = 0; i < nodes.length; i++) {
         var node = nodes[i];
-        if (!node || node.kind !== "assistant") continue;
+        if (node.kind === "tool-result") {
+          if (node.callTime !== null) toolMs += Math.max(0, node.time - node.callTime);
+          continue;
+        }
+        if (node.kind !== "assistant") continue;
         turns.add(node.turn);
         steps += 1;
+        if (node.timing !== undefined && node.timing.stepStartTime !== null) {
+          llmMs += Math.max(0, node.timing.completedTime - node.timing.stepStartTime);
+        }
+        var reading = assistantStepReading(node);
+        if (reading.ttftMs !== null) { ttftMs += reading.ttftMs; ttftSteps += 1; }
+        if (reading.decodeMs !== null && reading.outputTokens !== null) {
+          decodeMs += reading.decodeMs;
+          decodeTokens += reading.outputTokens;
+        }
       }
-      return { turns: turns.size, steps: steps };
+      return { turns: turns.size, steps: steps, llmMs: llmMs, toolMs: toolMs, ttftMs: ttftMs, ttftSteps: ttftSteps, decodeMs: decodeMs, decodeTokens: decodeTokens };
+    }
+    function deriveCounts(nodes) {
+      var s = deriveStats(nodes);
+      return { turns: s.turns, steps: s.steps };
     }
     function billedInputTokens(usage) {
       return usage.uncachedInputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
@@ -138,6 +200,16 @@ window.__ModuleLoader__.load({
       if (n < 1e3) return String(n);
       if (n < 1e6) return scaled(n / 1e3) + "K";
       return scaled(n / 1e6) + "M";
+    }
+    function formatDuration(ms) {
+      var s = ms / 1e3;
+      if (s < 60) return String(Math.round(s * 10) / 10) + "s";
+      var whole = Math.round(s);
+      return Math.floor(whole / 60) + "m" + (whole % 60) + "s";
+    }
+    function formatTokensPerSecond(tps) {
+      var clamped = Math.max(0, tps);
+      return clamped >= 10 ? String(Math.round(clamped)) : String(Math.round(clamped * 10) / 10);
     }
     function roundedIntegerPercent(cacheReadTokens, denominator) {
       var denominatorQuotient = Math.floor(denominator / 200);
@@ -209,7 +281,7 @@ window.__ModuleLoader__.load({
     function isPeak(meta, date) {
       var t = date || new Date();
       var bjDow = new Date(t.getTime() + 8 * 3600000).getUTCDay();
-      if (bjDow === 0 || bjDow === 6) return false; // weekend: idle all day
+      if (bjDow === 0 || bjDow === 6) return false;
       var windows = (meta && Array.isArray(meta.peakWindows) && meta.peakWindows.length > 0)
         ? meta.peakWindows
         : [{ start: "09:00", end: "12:00" }, { start: "14:00", end: "18:00" }];
@@ -225,7 +297,77 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
-    // 4. shared data context
+    // 4. user module config (persisted in localStorage)
+    // -----------------------------------------------------------------------
+    var DEFAULT_MODULE_CONFIG = {
+      counts:   { enabled: true,  order: 10 },
+      cacheHit: { enabled: true,  order: 20 },
+      tokens:   { enabled: true,  order: 30 },
+      wallet:   { enabled: true,  order: 40 },
+      peakIdle: { enabled: true,  order: 50 },
+      duration: { enabled: false, order: 60 },
+      speed:    { enabled: false, order: 70 },
+    };
+    var configListeners = new Set();
+    var moduleConfig = loadModuleConfig();
+
+    function loadModuleConfig() {
+      var base = {};
+      for (var id in DEFAULT_MODULE_CONFIG) {
+        base[id] = { enabled: DEFAULT_MODULE_CONFIG[id].enabled, order: DEFAULT_MODULE_CONFIG[id].order };
+      }
+      try {
+        var raw = (typeof localStorage !== "undefined") ? localStorage.getItem(CONFIG_KEY) : null;
+        if (raw) {
+          var saved = JSON.parse(raw);
+          for (var key in DEFAULT_MODULE_CONFIG) {
+            var s = saved && saved[key];
+            if (s && typeof s === "object") {
+              if (typeof s.enabled === "boolean") base[key].enabled = s.enabled;
+              if (typeof s.order === "number" && isFinite(s.order)) base[key].order = s.order;
+            }
+          }
+        }
+      } catch { /* corrupted config: fall back to defaults */ }
+      return base;
+    }
+    function saveModuleConfig() {
+      try {
+        if (typeof localStorage !== "undefined") localStorage.setItem(CONFIG_KEY, JSON.stringify(moduleConfig));
+      } catch { /* storage unavailable: keep in-memory only */ }
+    }
+    function notifyConfigChanged() {
+      configListeners.forEach(function (fn) { fn(); });
+    }
+    function setModuleEnabled(id, enabled) {
+      if (!moduleConfig[id]) return;
+      moduleConfig[id].enabled = enabled;
+      saveModuleConfig();
+      notifyConfigChanged();
+    }
+    function moveModule(id, delta) {
+      var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return moduleConfig[a].order - moduleConfig[b].order; });
+      var i = ids.indexOf(id);
+      var j = i + delta;
+      if (i < 0 || j < 0 || j >= ids.length) return;
+      var tmp = moduleConfig[ids[i]].order;
+      moduleConfig[ids[i]].order = moduleConfig[ids[j]].order;
+      moduleConfig[ids[j]].order = tmp;
+      saveModuleConfig();
+      notifyConfigChanged();
+    }
+    function useModuleConfig() {
+      var tick = useState(0)[1];
+      useEffect(function () {
+        var fn = function () { tick(function (x) { return x + 1; }); };
+        configListeners.add(fn);
+        return function () { configListeners.delete(fn); };
+      }, [tick]);
+      return moduleConfig;
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. shared data context
     // -----------------------------------------------------------------------
     function useStatsContext(props) {
       var sessionId = props.sessionId;
@@ -235,12 +377,12 @@ window.__ModuleLoader__.load({
       var balance = useStore();
       var nodes = useSession(function (s) { return s.chat.legacy.nodes; });
       var usage = useProjection("tokenUsage");
-      var counts = React.useMemo(function () { return deriveCounts(nodes || []); }, [nodes]);
+      var projectedStats = useProjection("sessionStats");
+      var stats = projectedStats || deriveStats(nodes || []);
       var sessionCostState = useState(null);
       var sessionCost = sessionCostState[0];
       var setSessionCost = sessionCostState[1];
 
-      // auto-refresh balance + keep peak/idle fresh across time boundaries
       var tick = useState(0)[1];
       useEffect(function () {
         refreshBalance(true);
@@ -251,7 +393,6 @@ window.__ModuleLoader__.load({
         return function () { clearInterval(timer); };
       }, [tick]);
 
-      // per-session spend comes from the HOST (priced per request at arrival).
       useEffect(function () {
         if (!sessionId) return;
         var cancelled = false;
@@ -277,17 +418,18 @@ window.__ModuleLoader__.load({
       return {
         t: t,
         sessionId: sessionId,
-        counts: counts,
+        stats: stats,
         usage: usage || null,
         billedInput: billedInput,
         cacheHit: cacheHit,
         sessionCost: sessionCost,
         balance: balance,
         peak: peak,
-        // tools + actions available to every module
         fmt: fmt,
         fmtMoney: fmtMoney,
         formatTokens: formatTokens,
+        formatDuration: formatDuration,
+        formatTokensPerSecond: formatTokensPerSecond,
         symbolOf: symbolOf,
         statusOf: statusOf,
         actions: {
@@ -301,19 +443,47 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
-    // 5. module registry (each module owns its display logic)
+    // 6. module registry (each module owns its display logic)
     // -----------------------------------------------------------------------
     var STAT_MODULES = [
       {
         id: "counts",
+        labelKey: "moduleCounts",
         order: 10,
-        enabled: function (ctx) { return ctx.counts.steps > 0; },
+        enabled: function (ctx) { return ctx.stats.steps > 0; },
         render: function (ctx) {
-          return h("span", null, ctx.t("statsCounts", { turns: ctx.counts.turns, steps: ctx.counts.steps }));
+          return h("span", null, ctx.t("statsCounts", { turns: ctx.stats.turns, steps: ctx.stats.steps }));
+        },
+      },
+      {
+        id: "duration",
+        labelKey: "moduleDuration",
+        order: 60,
+        enabled: function (ctx) { return ctx.stats.llmMs > 0 || ctx.stats.toolMs > 0; },
+        render: function (ctx) {
+          var parts = [];
+          if (ctx.stats.llmMs > 0) parts.push("LLM " + ctx.formatDuration(ctx.stats.llmMs));
+          if (ctx.stats.toolMs > 0) parts.push(ctx.t("toolCall") + " " + ctx.formatDuration(ctx.stats.toolMs));
+          if (parts.length === 0) return null;
+          return h("span", null, parts.join(" · "));
+        },
+      },
+      {
+        id: "speed",
+        labelKey: "moduleSpeed",
+        order: 70,
+        enabled: function (ctx) { return ctx.stats.ttftSteps > 0 || ctx.stats.decodeMs > 0; },
+        render: function (ctx) {
+          var parts = [];
+          if (ctx.stats.ttftSteps > 0) parts.push(ctx.t("ttftAvg") + " " + ctx.formatDuration(ctx.stats.ttftMs / ctx.stats.ttftSteps));
+          if (ctx.stats.decodeMs > 0) parts.push(ctx.formatTokensPerSecond(ctx.stats.decodeTokens / (ctx.stats.decodeMs / 1e3)) + " tok/s");
+          if (parts.length === 0) return null;
+          return h("span", null, parts.join(" · "));
         },
       },
       {
         id: "cacheHit",
+        labelKey: "moduleCacheHit",
         order: 20,
         enabled: function (ctx) { return ctx.cacheHit !== null; },
         render: function (ctx) {
@@ -322,6 +492,7 @@ window.__ModuleLoader__.load({
       },
       {
         id: "tokens",
+        labelKey: "moduleTokens",
         order: 30,
         enabled: function (ctx) { return ctx.usage !== null && ctx.billedInput > 0; },
         render: function (ctx) {
@@ -333,6 +504,7 @@ window.__ModuleLoader__.load({
       },
       {
         id: "wallet",
+        labelKey: "moduleWallet",
         order: 40,
         enabled: function (ctx) {
           return ctx.balance.phase === "ready" && ctx.balance.data && ctx.balance.data.total !== null;
@@ -344,7 +516,6 @@ window.__ModuleLoader__.load({
             : st === "warn" ? "var(--dsw-alias-state-warn-primary)"
             : "inherit";
           var sym = ctx.symbolOf(d.currency);
-          // Spend is always shown (¥0.00 until the host reports usage).
           var cost = (ctx.sessionCost !== null && typeof ctx.sessionCost.cost === "number") ? ctx.sessionCost.cost : 0;
           var inner = [];
           inner.push(h("span", { style: { color: "inherit" } },
@@ -361,6 +532,7 @@ window.__ModuleLoader__.load({
       },
       {
         id: "peakIdle",
+        labelKey: "modulePeakIdle",
         order: 50,
         enabled: function (ctx) { return ctx.peak !== null; },
         render: function (ctx) {
@@ -373,7 +545,6 @@ window.__ModuleLoader__.load({
       },
     ];
 
-    // wallet's own tooltip: updated-at + click-to-top-up
     function walletTooltip(ctx) {
       var d = ctx.balance.data;
       var lines = [];
@@ -383,38 +554,97 @@ window.__ModuleLoader__.load({
     }
 
     // -----------------------------------------------------------------------
-    // 6. orchestrator
+    // 7. settings popup
+    // -----------------------------------------------------------------------
+    function settingsPanel(ctx, cfg) {
+      var modules = STAT_MODULES.slice().sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
+      return h("div", { className: "dsh-lb-settings" },
+        h("div", { className: "dsh-lb-settings-title" }, ctx.t("settings")),
+        modules.map(function (m) {
+          return h("div", { className: "dsh-lb-settings-row", key: m.id },
+            h("input", {
+              type: "checkbox",
+              checked: cfg[m.id].enabled,
+              onChange: function (e) { setModuleEnabled(m.id, e.target.checked); },
+            }),
+            h("span", { className: "dsh-lb-settings-name" }, ctx.t(m.labelKey)),
+            h("button", {
+              className: "dsh-lb-settings-btn",
+              title: ctx.t("moveUp"),
+              onClick: function () { moveModule(m.id, -1); },
+            }, "▲"),
+            h("button", {
+              className: "dsh-lb-settings-btn",
+              title: ctx.t("moveDown"),
+              onClick: function () { moveModule(m.id, 1); },
+            }, "▼")
+          );
+        })
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. orchestrator
     // -----------------------------------------------------------------------
     function StatsLine(props) {
       var ctx = useStatsContext(props);
+      var cfg = useModuleConfig();
+      var openState = useState(false);
+      var open = openState[0];
+      var setOpen = openState[1];
+
       var visible = STAT_MODULES
-        .filter(function (m) { return m.enabled(ctx); })
-        .sort(function (a, b) { return a.order - b.order; });
-      if (visible.length === 0) return null;
+        .filter(function (m) { return m.enabled(ctx) && cfg[m.id].enabled; })
+        .sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
 
       var children = [];
-      for (var i = 0; i < visible.length; i++) {
-        var seg = visible[i].render(ctx);
-        if (seg === null || seg === undefined) continue;
+      var pushSegment = function (seg) {
         if (children.length > 0) {
           children.push(h("span", { className: "dsh-lb-stats-sep", "aria-hidden": true }, "|"), " ");
         }
         children.push(seg);
+      };
+      for (var i = 0; i < visible.length; i++) {
+        var seg = visible[i].render(ctx);
+        if (seg === null || seg === undefined) continue;
+        pushSegment(seg);
       }
-      if (children.length === 0) return null;
+      pushSegment(h("span", {
+        className: "dsh-lb-gear",
+        title: ctx.t("settings"),
+        onClick: function () { setOpen(!open); },
+      }, "⚙"));
+
+      if (open) {
+        children.push(h("div", {
+          className: "dsh-lb-settings-backdrop",
+          onClick: function () { setOpen(false); },
+        }));
+        children.push(settingsPanel(ctx, cfg));
+      }
       return h("div", { className: "dsh-lb-stats" }, children);
     }
 
     // -----------------------------------------------------------------------
-    // 7. styles
+    // 9. styles
     // -----------------------------------------------------------------------
     var STYLE_CSS = [
-      ".dsh-lb-stats{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.4;font-variant-numeric:tabular-nums;padding:2px 0 6px;user-select:none;}",
+      ".dsh-lb-stats{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.4;font-variant-numeric:tabular-nums;padding:2px 0 6px;user-select:none;}",
       ".dsh-lb-stats-sep{opacity:.45;margin:0 1px;}",
+      ".dsh-lb-gear{cursor:pointer;opacity:.55;font-size:11px;line-height:1;padding:1px 3px;border-radius:4px;}",
+      ".dsh-lb-gear:hover{opacity:1;background:var(--dsw-alias-bg-layer-2);}",
+      ".dsh-lb-settings-backdrop{position:fixed;inset:0;z-index:998;}",
+      ".dsh-lb-settings{position:absolute;right:0;top:calc(100% + 6px);z-index:999;min-width:220px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:8px;font-size:12px;}",
+      ".dsh-lb-settings-title{font-weight:600;margin:2px 4px 6px;color:var(--dsw-alias-label-primary);}",
+      ".dsh-lb-settings-row{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:6px;}",
+      ".dsh-lb-settings-row:hover{background:var(--dsw-alias-bg-layer-1);}",
+      ".dsh-lb-settings-name{flex:1;color:var(--dsw-alias-label-secondary);}",
+      ".dsh-lb-settings-btn{border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:10px;padding:2px 4px;border-radius:4px;}",
+      ".dsh-lb-settings-btn:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);}",
     ].join("");
 
     // -----------------------------------------------------------------------
-    // 8. plugin definition
+    // 10. plugin definition
     // -----------------------------------------------------------------------
     var name = "dsh-lite-balance";
     var inject = ["slots", "locale"];
@@ -424,8 +654,6 @@ window.__ModuleLoader__.load({
       ctx.locale.register(NS, "en", en);
       var t = ctx.locale.bind(NS);
 
-      // id "stats" is the shipped StatsLine cell; priority -1 shadows it
-      // (lowest renders per the slot registry's entriesOfSlot dedupe).
       ctx.slots.inject("conversation.composer.dock", function () {
         return ctx.slots.register(
           {
@@ -452,8 +680,7 @@ window.__ModuleLoader__.load({
     exports.name = name;
     exports.inject = inject;
     exports.apply = apply;
-    // internal helpers exposed for the smoke tests (no runtime consumers)
-    exports._test = { deriveCounts, formatTokens, cacheHitPercent, fmtMoney, isPeak, statusOf, fmt, symbolOf };
+    exports._test = { deriveCounts, deriveStats, formatTokens, formatDuration, formatTokensPerSecond, cacheHitPercent, fmtMoney, isPeak, statusOf, fmt, symbolOf };
     return module.exports;
   }
 });
