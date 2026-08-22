@@ -44,6 +44,7 @@ window.__ModuleLoader__.load({
       close: "关闭",
       moveUp: "上移",
       moveDown: "下移",
+      drag: "拖动排序",
       moduleCounts: "轮次/步数",
       moduleDuration: "耗时",
       moduleSpeed: "速率",
@@ -69,6 +70,7 @@ window.__ModuleLoader__.load({
       close: "Close",
       moveUp: "Move up",
       moveDown: "Move down",
+      drag: "Drag to reorder",
       moduleCounts: "Turns · Steps",
       moduleDuration: "Duration",
       moduleSpeed: "Speed",
@@ -358,6 +360,18 @@ window.__ModuleLoader__.load({
       saveModuleConfig();
       notifyConfigChanged();
     }
+    /** Move one module to another position (drag & drop), renumbering order. */
+    function reorderModule(fromId, toId) {
+      var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return moduleConfig[a].order - moduleConfig[b].order; });
+      var from = ids.indexOf(fromId);
+      var to = ids.indexOf(toId);
+      if (from < 0 || to < 0 || from === to) return;
+      ids.splice(from, 1);
+      ids.splice(to, 0, fromId);
+      for (var i = 0; i < ids.length; i++) moduleConfig[ids[i]].order = (i + 1) * 10;
+      saveModuleConfig();
+      notifyConfigChanged();
+    }
     function useModuleConfig() {
       var tick = useState(0)[1];
       useEffect(function () {
@@ -560,19 +574,44 @@ window.__ModuleLoader__.load({
     // -----------------------------------------------------------------------
     function settingsPanel(ctx, cfg, onClose) {
       var modules = STAT_MODULES.slice().sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
+      var dragState = useState(null);
+      var dragFrom = dragState[0];
+      var setDragFrom = dragState[1];
       return h("div", { className: "dsh-lb-settings" },
         h("div", { className: "dsh-lb-settings-head" },
           h("span", { className: "dsh-lb-settings-title" }, ctx.t("settings")),
           h("button", { className: "dsh-lb-settings-close", title: ctx.t("close"), onClick: onClose }, "✕")
         ),
         modules.map(function (m) {
-          return h("div", { className: "dsh-lb-settings-row", key: m.id },
+          return h("div", {
+            className: "dsh-lb-settings-row" + (dragFrom === m.id ? " dsh-lb-settings-row--dragging" : ""),
+            key: m.id,
+            onDragOver: function (e) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; },
+            onDrop: function (e) {
+              e.preventDefault();
+              if (dragFrom !== null && dragFrom !== m.id) reorderModule(dragFrom, m.id);
+              setDragFrom(null);
+            },
+          },
             h("input", {
               type: "checkbox",
               checked: cfg[m.id].enabled,
               onChange: function (e) { setModuleEnabled(m.id, e.target.checked); },
             }),
             h("span", { className: "dsh-lb-settings-name" }, ctx.t(m.labelKey)),
+            h("span", {
+              className: "dsh-lb-settings-drag",
+              title: ctx.t("drag"),
+              draggable: true,
+              onDragStart: function (e) {
+                setDragFrom(m.id);
+                if (e.dataTransfer) {
+                  e.dataTransfer.effectAllowed = "move";
+                  try { e.dataTransfer.setData("text/plain", m.id); } catch (err) {}
+                }
+              },
+              onDragEnd: function () { setDragFrom(null); },
+            }, "⠿"),
             h("button", {
               className: "dsh-lb-settings-btn",
               title: ctx.t("moveUp"),
@@ -649,6 +688,10 @@ window.__ModuleLoader__.load({
       ".dsh-lb-settings-name{flex:1;color:var(--dsw-alias-label-secondary);}",
       ".dsh-lb-settings-btn{border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:10px;padding:2px 4px;border-radius:4px;}",
       ".dsh-lb-settings-btn:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);}",
+      ".dsh-lb-settings-drag{cursor:grab;color:inherit;opacity:.55;font-size:12px;line-height:1;padding:0 4px;user-select:none;}",
+      ".dsh-lb-settings-drag:hover{opacity:1;}",
+      ".dsh-lb-settings-drag:active{cursor:grabbing;}",
+      ".dsh-lb-settings-row--dragging{opacity:.5;}",
     ].join("");
 
     // -----------------------------------------------------------------------
