@@ -1,0 +1,15 @@
+# dsh-lite-balance bundle patch: inserts the plugin into a profile's layer stack.
+# Install via:  dsh plugin --profile web add ./packages/dsh-lite-balance
+#
+# Optional per-deployment tuning (all have sensible defaults):
+#   - insert:
+#       - id: lite-balance
+#         name: 'dsh-lite-balance'
+#         config:
+#           refreshMs: 60000          # client auto-refresh interval
+#           warnThreshold: 10         # below this the chip turns warning color
+#           criticalThreshold: 3      # below this the chip turns danger + toast
+#           rechargeUrl: https://platform.deepseek.com/top_up
+- insert:
+    - id: lite-balance
+      name: 'dsh-lite-balance'
