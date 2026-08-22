@@ -1,12 +1,11 @@
 /**
  * dsh-lite-balance client half (bundled for the dsh ModuleLoader).
  *
- * Three surfaces, one shared balance store:
- *   1. sidebar.footer.action — compact balance chip beside Settings
- *   2. conversation.composer.dock (id "stats") — replaces the built-in stats
- *      line with: turns · steps | session token usage | balance (status
- *      colored) | peak/off-peak indicator (Beijing time)
- *   3. shell.overlay — low-balance toast
+ * Two surfaces, one shared balance store:
+ *   1. conversation.composer.dock (id "stats") — replaces the built-in stats
+ *      line with: turns · steps | cache hit | session tokens | balance
+ *      (status colored) | peak/idle indicator (Beijing time)
+ *   2. shell.overlay — low-balance toast
  * Talks to the host route /dsh-lite-balance/balance only; the API key never
  * reaches the browser.
  */
@@ -46,9 +45,10 @@ window.__ModuleLoader__.load({
       toastBody: "当前余额 {amount}，请及时充值",
       toastRecharge: "去充值",
       statsCounts: "{turns} 轮 · {steps} 步",
+      statsCacheHit: "缓存命中 {percent}%",
       statsTokens: "输入 {input} tok · 输出 {output} tok",
       peak: "高峰",
-      offPeak: "低谷",
+      idle: "空闲",
     };
     var en = {
       label: "Balance",
@@ -68,12 +68,13 @@ window.__ModuleLoader__.load({
       toastBody: "Current balance {amount} — please top up soon",
       toastRecharge: "Top up now",
       statsCounts: "{turns} turns · {steps} steps",
+      statsCacheHit: "Cache hit {percent}%",
       statsTokens: "In {input} tok · Out {output} tok",
       peak: "Peak",
-      offPeak: "Off-peak",
+      idle: "Off-peak",
     };
 
-    // ---------- tiny shared store (chip / stats line / toast stay in sync) ----------
+    // ---------- tiny shared store (stats line / toast stay in sync) ----------
     var store = { phase: "loading", data: null, error: null, code: null };
     var listeners = new Set();
     function setStore(patch) {
@@ -125,16 +126,6 @@ window.__ModuleLoader__.load({
       if (n === null || n === undefined || !Number.isFinite(n)) return "—";
       return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
-    function fmtShort(n) {
-      if (n === null || n === undefined || !Number.isFinite(n)) return "—";
-      var abs = Math.abs(n);
-      var one = function (v) { return String(v).replace(/\.0$/, ""); };
-      if (abs >= 1000000) return one((n / 1000000).toFixed(1)) + "M";
-      if (abs >= 1000) return one((n / 1000).toFixed(1)) + "k";
-      if (abs >= 100) return String(Math.round(n));
-      if (abs >= 10) return one(n.toFixed(1));
-      return n.toFixed(2);
-    }
     /** > warnThreshold 默认色；[criticalThreshold, warnThreshold] 警告色；< criticalThreshold 危险色。 */
     function statusOf(total, meta) {
       var warn = (meta && meta.warnThreshold != null) ? meta.warnThreshold : 10;
@@ -163,7 +154,7 @@ window.__ModuleLoader__.load({
       return lines.join("\n");
     }
 
-    // ---------- stats-line helpers (turns / steps / tokens / peak) ----------
+    // ---------- stats-line helpers (turns / steps / tokens / cache / peak) ----------
     function deriveCounts(nodes) {
       var turns = new Set();
       var steps = 0;
@@ -183,6 +174,47 @@ window.__ModuleLoader__.load({
       if (n < 1e3) return String(n);
       if (n < 1e6) return scaled(n / 1e3) + "K";
       return scaled(n / 1e6) + "M";
+    }
+    /** Round a cache-read ratio to an integer percentage, with positive ties rounded up. */
+    function roundedIntegerPercent(cacheReadTokens, denominator) {
+      var denominatorQuotient = Math.floor(denominator / 200);
+      var denominatorRemainder = denominator % 200;
+      var lower = 0;
+      var upper = 100;
+      while (lower < upper) {
+        var candidate = Math.floor((lower + upper + 1) / 2);
+        var factor = candidate * 2 - 1;
+        if (cacheReadTokens >= factor * denominatorQuotient + Math.ceil(factor * denominatorRemainder / 200)) lower = candidate;
+        else upper = candidate - 1;
+      }
+      return lower;
+    }
+    /** Display-ready cache-hit share of prompt-side input over the whole durable log. */
+    function cacheHitPercent(usage) {
+      var denominator = billedInputTokens(usage);
+      if (denominator === 0) return null;
+      var missedInputTokens = usage.uncachedInputTokens + usage.cacheWriteTokens;
+      if (missedInputTokens === 0) return "100";
+      var integerPercent = roundedIntegerPercent(usage.cacheReadTokens, denominator);
+      if (integerPercent < 100) return String(integerPercent);
+      var decimalPlaces = 1;
+      var scaledDoubleGap = missedInputTokens * 200;
+      var denominatorTens = Math.floor(denominator / 10);
+      while (scaledDoubleGap <= denominatorTens) {
+        scaledDoubleGap *= 10;
+        decimalPlaces += 1;
+      }
+      var denominatorOnes = denominator % 10;
+      var roundedLoss = 5;
+      for (var loss = 1; loss < 5; loss += 1) {
+        var factor = loss * 2 + 1;
+        var threshold = factor * denominatorTens + Math.floor(factor * denominatorOnes / 10);
+        if (scaledDoubleGap <= threshold) {
+          roundedLoss = loss;
+          break;
+        }
+      }
+      return "99." + "9".repeat(decimalPlaces - 1) + String(10 - roundedLoss);
     }
     function parseHHMM(text) {
       if (typeof text !== "string") return null;
@@ -212,109 +244,29 @@ window.__ModuleLoader__.load({
         return date.getHours() * 60 + date.getMinutes();
       }
     }
-    function isOffPeak(meta, date) {
-      var start = parseHHMM(meta && meta.offPeakStart);
-      var end = parseHHMM(meta && meta.offPeakEnd);
-      if (start === null || end === null) { start = 30; end = 510; } // 00:30–08:30 Beijing
+    /** True while Beijing time falls inside any configured peak window. */
+    function isPeak(meta, date) {
+      var windows = (meta && Array.isArray(meta.peakWindows) && meta.peakWindows.length > 0)
+        ? meta.peakWindows
+        : [{ start: "09:00", end: "12:00" }, { start: "14:00", end: "18:00" }];
       var now = beijingMinutes(date || new Date());
-      if (start <= end) return now >= start && now < end;
-      return now >= start || now < end; // window crosses midnight
+      for (var i = 0; i < windows.length; i++) {
+        var start = parseHHMM(windows[i] && windows[i].start);
+        var end = parseHHMM(windows[i] && windows[i].end);
+        if (start === null || end === null) continue;
+        if (start <= end) { if (now >= start && now < end) return true; }
+        else { if (now >= start || now < end) return true; } // window crosses midnight
+      }
+      return false;
     }
 
     // ---------- shared styles (theme tokens from the host app) ----------
     var STYLE_CSS = [
-      ".dsh-lb-chip{display:inline-flex;align-items:center;gap:4px;max-width:100%;height:22px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:11px;line-height:1;font-variant-numeric:tabular-nums;cursor:pointer;user-select:none;white-space:nowrap;box-sizing:border-box;}",
-      ".dsh-lb-chip:hover{border-color:var(--dsw-alias-border-l2);}",
-      ".dsh-lb-chip--rail{height:24px;padding:0 6px;justify-content:center;gap:2px;}",
-      ".dsh-lb-dot{width:6px;height:6px;border-radius:50%;flex:none;}",
-      ".dsh-lb-ok .dsh-lb-dot{background:var(--dsw-alias-state-success-primary);}",
-      ".dsh-lb-warn{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary);}",
-      ".dsh-lb-warn .dsh-lb-dot{background:var(--dsw-alias-state-warn-primary);}",
-      ".dsh-lb-danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary);}",
-      ".dsh-lb-danger .dsh-lb-dot{background:var(--dsw-alias-state-error-primary);}",
-      ".dsh-lb-danger.dsh-lb-pulse{animation:dshLbPulse 1.6s ease-in-out infinite;}",
-      "@keyframes dshLbPulse{0%,100%{opacity:1}50%{opacity:.55}}",
-      ".dsh-lb-refresh{border:0;background:transparent;color:inherit;opacity:.55;font-size:12px;line-height:1;padding:2px 3px;cursor:pointer;border-radius:4px;}",
-      ".dsh-lb-refresh:hover{opacity:1;background:var(--dsw-alias-bg-layer-2);}",
       ".dsh-lb-stats{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.4;font-variant-numeric:tabular-nums;padding:2px 0 6px;user-select:none;}",
       ".dsh-lb-stats-sep{opacity:.45;margin:0 1px;}",
       ".dsh-lb-toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:0 8px 24px rgba(0,0,0,.18);font-size:12px;pointer-events:auto;}",
       ".dsh-lb-toast-btn{border:0;border-radius:6px;padding:5px 12px;background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-bg-base);cursor:pointer;font-size:12px;font-weight:600;}",
-      "@media (prefers-reduced-motion:reduce){.dsh-lb-danger.dsh-lb-pulse{animation:none;}}",
     ].join("");
-
-    // ---------- BalanceChip (sidebar footer) ----------
-    function BalanceChip(props) {
-      var wide = props.wide !== false;
-      var t = props.t;
-      var state = useStore();
-
-      useEffect(function () {
-        refreshBalance(true);
-        var timer = setInterval(function () { refreshBalance(false); }, refreshMsRef.current);
-        return function () { clearInterval(timer); };
-      }, []);
-
-      var phase = state.phase;
-      var data = state.data;
-      var status = "ok";
-      var sym = "";
-      var total = null;
-      if (data) {
-        status = statusOf(data.total, data.meta || {});
-        sym = symbolOf(data.currency);
-        total = data.total;
-      } else if (phase === "error") {
-        status = "error";
-      }
-
-      var title = tooltipOf(t, state);
-      var cls = "dsh-lb-chip";
-      if (!wide) cls += " dsh-lb-chip--rail";
-      if (status === "warn") cls += " dsh-lb-warn";
-      if (status === "danger") cls += " dsh-lb-danger dsh-lb-pulse";
-      if (status === "ok" && phase === "ready") cls += " dsh-lb-ok";
-      if (status === "error") cls += " dsh-lb-warn";
-
-      var onClick = function (e) {
-        if (e.detail >= 2) { refreshBalance(true); return; }
-        if (phase === "error") { refreshBalance(true); return; }
-        var url = data && data.meta && data.meta.rechargeUrl;
-        if (url) window.open(url, "_blank", "noopener");
-      };
-      var onRefresh = function (e) {
-        e.stopPropagation();
-        refreshBalance(true);
-      };
-
-      var label;
-      if (phase === "error") {
-        label = h("span", null, "⚠");
-      } else if (phase === "loading" && !data) {
-        label = h("span", null, "…");
-      } else if (wide) {
-        label = h("span", null,
-          h("span", { className: "dsh-lb-dot" }),
-          h("span", { style: { marginLeft: 4 } }, sym + fmt(total))
-        );
-      } else {
-        label = h("span", { style: { fontSize: 10 } }, fmtShort(total));
-      }
-
-      var children = [label];
-      if (wide && phase !== "loading" && phase !== "error") {
-        children.push(
-          h("span", {
-            className: "dsh-lb-refresh",
-            role: "button",
-            title: t("refresh"),
-            onClick: onRefresh,
-          }, "↻")
-        );
-      }
-
-      return h("div", { className: cls, title: title, onClick: onClick }, children);
-    }
 
     // ---------- StatsLine (replaces the built-in composer-dock stats) ----------
     function StatsLine(props) {
@@ -326,22 +278,24 @@ window.__ModuleLoader__.load({
       var usage = useProjection("tokenUsage");
       var counts = React.useMemo(function () { return deriveCounts(nodes || []); }, [nodes]);
 
-      // keep the peak/off-peak indicator fresh across time boundaries
+      // auto-refresh balance + keep the peak/idle indicator fresh across time boundaries
       var tick = useState(0)[1];
       useEffect(function () {
-        var timer = setInterval(function () { tick(function (x) { return x + 1; }); }, 60000);
+        refreshBalance(true);
+        var timer = setInterval(function () {
+          refreshBalance(false);
+          tick(function (x) { return x + 1; });
+        }, refreshMsRef.current);
         return function () { clearInterval(timer); };
       }, [tick]);
-      // make sure the shared balance store is warm even if the sidebar chip never mounted
-      useEffect(function () {
-        if (!store.data) refreshBalance(true);
-      }, []);
 
       var groups = [];
       if (counts.steps > 0) {
         groups.push(t("statsCounts", { turns: counts.turns, steps: counts.steps }));
       }
-      if (usage && (billedInputTokens(usage) > 0 || usage.outputTokens > 0)) {
+      if (usage && billedInputTokens(usage) > 0) {
+        var cacheHit = cacheHitPercent(usage);
+        if (cacheHit !== null) groups.push(t("statsCacheHit", { percent: cacheHit }));
         groups.push(t("statsTokens", {
           input: formatTokens(billedInputTokens(usage)),
           output: formatTokens(usage.outputTokens),
@@ -368,11 +322,11 @@ window.__ModuleLoader__.load({
 
       var peakSeg = null;
       if (state.data && state.data.meta) {
-        var off = isOffPeak(state.data.meta);
+        var peak = isPeak(state.data.meta);
         peakSeg = h("span", {
-          style: { color: off ? "var(--dsw-alias-state-success-primary)" : "var(--dsw-alias-state-error-primary)" },
-          title: t("peak") + "/" + t("offPeak"),
-        }, off ? t("offPeak") : t("peak"));
+          style: { color: peak ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-state-success-primary)" },
+          title: t("peak") + "/" + t("idle"),
+        }, peak ? t("peak") : t("idle"));
       }
 
       if (groups.length === 0 && !balanceSeg && !peakSeg) return null;
@@ -439,20 +393,6 @@ window.__ModuleLoader__.load({
       ctx.locale.register(NS, "en", en);
       var t = ctx.locale.bind(NS);
 
-      ctx.slots.inject("sidebar.footer.action", function () {
-        return ctx.slots.register(
-          {
-            name: "sidebar.footer.action",
-            id: "dsh-lite-balance",
-            order: -10,
-            label: function () { return t("label"); },
-            locale: NS,
-            inject: function () { return { t: ctx.locale.bind(NS) }; },
-          },
-          BalanceChip
-        );
-      });
-
       // id "stats" is the shipped StatsLine cell. Same-id entries may coexist
       // at DIFFERENT priorities, and the slot registry renders the LOWEST
       // priority one (entriesOfSlot dedupes by id after ascending sort) — so
@@ -497,7 +437,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     exports.apply = apply;
     // internal helpers exposed for the smoke tests (no runtime consumers)
-    exports._test = { deriveCounts, formatTokens, isOffPeak, statusOf, fmt, fmtShort, symbolOf };
+    exports._test = { deriveCounts, formatTokens, cacheHitPercent, isPeak, statusOf, fmt, symbolOf };
     return module.exports;
   }
 });

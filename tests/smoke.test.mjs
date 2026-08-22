@@ -111,14 +111,12 @@ const fakeClientCtx = {
   effect(fn) { const d = fn(); if (typeof d === 'function') d(); },
 };
 clientMod.apply(fakeClientCtx);
-assert(Object.keys(injections).sort().join(',') === 'conversation.composer.dock,shell.overlay,sidebar.footer.action', 'injects into sidebar footer + composer dock + overlay');
+assert(Object.keys(injections).sort().join(',') === 'conversation.composer.dock,shell.overlay', 'injects into composer dock + overlay (sidebar chip removed)');
 for (const cb of Object.values(injections)) cb();
 const chip = registrations.find((r) => r.opts.id === 'dsh-lite-balance');
 const toast = registrations.find((r) => r.opts.id === 'dsh-lite-balance-toast');
-assert(chip && chip.opts.name === 'sidebar.footer.action' && chip.opts.order === -10, 'chip registered in sidebar.footer.action (order -10)');
+assert(chip === undefined, 'sidebar footer chip registration removed');
 assert(toast && toast.opts.name === 'shell.overlay', 'toast registered in shell.overlay');
-assert(typeof chip.opts.label === 'function' && chip.opts.label() === 'label', 'chip label thunk resolves through locale');
-assert(typeof chip.opts.inject().t === 'function', 'chip receives bound t');
 
 const stats = registrations.find((r) => r.opts.id === 'stats');
 assert(stats && stats.opts.name === 'conversation.composer.dock' && stats.opts.priority === -1 && typeof stats.comp === 'function', 'shadows built-in stats: composer.dock id "stats" at priority -1');
@@ -171,14 +169,20 @@ assert(T.deriveCounts([
 const turns = T.deriveCounts([{ kind: 'assistant', turn: 0 }, { kind: 'assistant', turn: 1 }, { kind: 'assistant', turn: 1 }]).turns;
 assert(turns === 2, 'deriveCounts counts distinct turns');
 assert(T.formatTokens(517) === '517' && T.formatTokens(12200) === '12.2K' && T.formatTokens(8200000) === '8.2M', 'formatTokens K/M compaction');
+assert(T.cacheHitPercent({ uncachedInputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0, outputTokens: 0 }) === '90', 'cacheHitPercent computes 90%');
+assert(T.cacheHitPercent({ uncachedInputTokens: 0, cacheReadTokens: 500, cacheWriteTokens: 0, outputTokens: 10 }) === '100', 'cacheHitPercent full hit -> 100');
+assert(T.cacheHitPercent({ uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 }) === null, 'cacheHitPercent null when no billed input');
 assert(T.statusOf(10.01, { warnThreshold: 10, criticalThreshold: 3 }) === 'ok', '>10 default color');
 assert(T.statusOf(10, { warnThreshold: 10, criticalThreshold: 3 }) === 'warn', '10 is warn (yellow)');
 assert(T.statusOf(3, { warnThreshold: 10, criticalThreshold: 3 }) === 'warn', '3 is warn (yellow)');
 assert(T.statusOf(2.99, { warnThreshold: 10, criticalThreshold: 3 }) === 'danger', '<3 danger (red)');
-const offPeakMeta = { offPeakStart: '00:30', offPeakEnd: '08:30' };
-assert(T.isOffPeak(offPeakMeta, new Date('2026-08-22T01:00:00+08:00')) === true, '01:00 Beijing is off-peak');
-assert(T.isOffPeak(offPeakMeta, new Date('2026-08-22T12:00:00+08:00')) === false, '12:00 Beijing is peak');
-assert(T.isOffPeak({}, new Date('2026-08-22T12:00:00+08:00')) === false, 'defaults window when meta absent');
+const peakMeta = { peakWindows: [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }] };
+assert(T.isPeak(peakMeta, new Date('2026-08-22T10:00:00+08:00')) === true, '10:00 Beijing is peak (09:00-12:00)');
+assert(T.isPeak(peakMeta, new Date('2026-08-22T15:00:00+08:00')) === true, '15:00 Beijing is peak (14:00-18:00)');
+assert(T.isPeak(peakMeta, new Date('2026-08-22T13:00:00+08:00')) === false, '13:00 Beijing is idle');
+assert(T.isPeak(peakMeta, new Date('2026-08-22T08:59:00+08:00')) === false, '08:59 Beijing is idle');
+assert(T.isPeak(peakMeta, new Date('2026-08-22T18:00:00+08:00')) === false, '18:00 Beijing is idle (window end exclusive)');
+assert(T.isPeak({}, new Date('2026-08-22T10:00:00+08:00')) === true, 'defaults to 09:00-12:00/14:00-18:00 when meta absent');
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

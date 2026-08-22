@@ -13,8 +13,7 @@
  *   DEEPSEEK_BALANCE_WARN_THRESHOLD     (number, default 10)
  *   DEEPSEEK_BALANCE_CRITICAL_THRESHOLD (number, default 3)
  *   DEEPSEEK_BALANCE_RECHARGE_URL       (string, default DeepSeek platform)
- *   DEEPSEEK_BALANCE_OFFPEAK_START      (HH:MM Beijing, default 00:30)
- *   DEEPSEEK_BALANCE_OFFPEAK_END        (HH:MM Beijing, default 08:30)
+ *   DEEPSEEK_BALANCE_PEAK_WINDOWS       ("09:00-12:00,14:00-18:00", Beijing time)
  * Plugin `config` from the profile patch row wins over env, env wins over
  * defaults.
  */
@@ -66,6 +65,35 @@ function thresholdOf(configValue, envName, fallback) {
   return fallback;
 }
 
+/**
+ * Normalize one peak-window entry into { start, end } (HH:MM strings), or null.
+ * Accepts { start, end } objects and "09:00-12:00" strings.
+ */
+function normalizePeakWindow(item) {
+  if (item && typeof item.start === 'string' && typeof item.end === 'string') {
+    return { start: item.start, end: item.end };
+  }
+  if (typeof item === 'string') {
+    const m = /^\s*(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})\s*$/.exec(item.trim());
+    if (m) return { start: m[1], end: m[2] };
+  }
+  return null;
+}
+
+/** Effective peak windows (Beijing time): config > env > default. */
+function resolvePeakWindows(config) {
+  if (Array.isArray(config?.peakWindows)) {
+    const fromConfig = config.peakWindows.map(normalizePeakWindow).filter(Boolean);
+    if (fromConfig.length > 0) return fromConfig;
+  }
+  const env = process.env.DEEPSEEK_BALANCE_PEAK_WINDOWS;
+  if (env) {
+    const fromEnv = env.split(',').map(normalizePeakWindow).filter(Boolean);
+    if (fromEnv.length > 0) return fromEnv;
+  }
+  return [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }];
+}
+
 /** Resolve the runtime settings shared by the route and the client meta. */
 function resolveSettings(config) {
   return {
@@ -75,11 +103,10 @@ function resolveSettings(config) {
     warnThreshold: thresholdOf(config?.warnThreshold, 'DEEPSEEK_BALANCE_WARN_THRESHOLD', 10),
     criticalThreshold: thresholdOf(config?.criticalThreshold, 'DEEPSEEK_BALANCE_CRITICAL_THRESHOLD', 3),
     rechargeUrl: config?.rechargeUrl ?? process.env.DEEPSEEK_BALANCE_RECHARGE_URL ?? DEFAULT_RECHARGE_URL,
-    // DeepSeek off-peak (idle) window, Beijing time — the client colors the
-    // peak/off-peak indicator from these. Default 00:30–08:30 (the official
-    // off-peak window; the Aug 2026 scheme prices it at half of peak).
-    offPeakStart: config?.offPeakStart ?? process.env.DEEPSEEK_BALANCE_OFFPEAK_START ?? '00:30',
-    offPeakEnd: config?.offPeakEnd ?? process.env.DEEPSEEK_BALANCE_OFFPEAK_END ?? '08:30',
+    // DeepSeek peak windows, Beijing time — the client colors the peak/idle
+    // indicator from these; everything outside is idle. Default 09:00–12:00
+    // and 14:00–18:00.
+    peakWindows: resolvePeakWindows(config),
   };
 }
 

@@ -7,11 +7,12 @@
 #         name: 'dsh-lite-balance'
 #         config:
 #           refreshMs: 60000          # client auto-refresh interval
-#           warnThreshold: 10         # below this the chip turns warning color
-#           criticalThreshold: 3      # below this the chip turns danger + toast
+#           warnThreshold: 10         # below this balance turns warning color
+#           criticalThreshold: 3      # below this balance turns danger + toast
 #           rechargeUrl: https://platform.deepseek.com/top_up
-#           offPeakStart: '00:30'   # 低谷时段开始（北京时间 HH:MM）
-#           offPeakEnd: '08:30'     # 低谷时段结束（北京时间 HH:MM）
+#           peakWindows:              # 高峰时段（北京时间），其余为空闲
+#             - { start: '09:00', end: '12:00' }
+#             - { start: '14:00', end: '18:00' }
 - insert:
     - id: lite-balance
       name: 'dsh-lite-balance'
