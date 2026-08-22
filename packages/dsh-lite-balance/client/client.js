@@ -179,19 +179,6 @@ window.__ModuleLoader__.load({
       if (n < 1e6) return scaled(n / 1e3) + "K";
       return scaled(n / 1e6) + "M";
     }
-    /** Estimate the current session's spend (CNY) from token usage + pricing. */
-    function sessionCost(usage, pricing, peak) {
-      if (!usage || !pricing || typeof pricing !== 'object') return null;
-      var factor = (typeof pricing.idleFactor === 'number' && isFinite(pricing.idleFactor)) ? pricing.idleFactor : 0.5;
-      var peakOf = function (v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; };
-      var missPerTok = peakOf(pricing.inputMissPeakPerM) / 1e6;
-      var hitPerTok = peakOf(pricing.inputHitPeakPerM) / 1e6;
-      var outPerTok = peakOf(pricing.outputPeakPerM) / 1e6;
-      if (!peak) { missPerTok *= factor; hitPerTok *= factor; outPerTok *= factor; }
-      return ((usage.uncachedInputTokens || 0) + (usage.cacheWriteTokens || 0)) * missPerTok
-        + (usage.cacheReadTokens || 0) * hitPerTok
-        + (usage.outputTokens || 0) * outPerTok;
-    }
     /** Money formatting: 2 decimals at/above ¥1, up to 4 below (trim trailing zeros). */
     function fmtMoney(n) {
       if (n === null || n === undefined || !isFinite(n)) return "—";
@@ -297,6 +284,7 @@ window.__ModuleLoader__.load({
 
     // ---------- StatsLine (replaces the built-in composer-dock stats) ----------
     function StatsLine(props) {
+      var sessionId = props.sessionId;
       var useSession = props.useSession;
       var useProjection = props.useProjection;
       var t = props.t;
@@ -304,6 +292,9 @@ window.__ModuleLoader__.load({
       var nodes = useSession(function (s) { return s.chat.legacy.nodes; });
       var usage = useProjection("tokenUsage");
       var counts = React.useMemo(function () { return deriveCounts(nodes || []); }, [nodes]);
+      var sessionCostState = useState(null); // { cost, priced } | null
+      var sessionCost = sessionCostState[0];
+      var setSessionCost = sessionCostState[1];
 
       // auto-refresh balance + keep the peak/idle indicator fresh across time boundaries
       var tick = useState(0)[1];
@@ -315,6 +306,26 @@ window.__ModuleLoader__.load({
         }, refreshMsRef.current);
         return function () { clearInterval(timer); };
       }, [tick]);
+
+      // per-session spend comes from the HOST (priced per request at arrival
+      // time). Poll it so live generation and peak/off-peak switches show up.
+      useEffect(function () {
+        if (!sessionId) return;
+        var cancelled = false;
+        var fetchCost = function () {
+          fetch(API_PATH + "?session=" + encodeURIComponent(sessionId), { cache: "no-store" })
+            .then(function (r) { return r.json(); })
+            .then(function (json) {
+              if (cancelled) return;
+              if (json && json.sessionCost && typeof json.sessionCost.cost === "number") setSessionCost(json.sessionCost);
+              else setSessionCost(null);
+            })
+            .catch(function () { if (!cancelled) setSessionCost(null); });
+        };
+        fetchCost();
+        var timer = setInterval(fetchCost, 10000);
+        return function () { cancelled = true; clearInterval(timer); };
+      }, [sessionId, setSessionCost]);
 
       var groups = [];
       if (counts.steps > 0) {
@@ -337,10 +348,9 @@ window.__ModuleLoader__.load({
           : st === "warn" ? "var(--dsw-alias-state-warn-primary)"
           : "inherit";
         var sym = symbolOf(d.currency);
-        var peak = isPeak(d.meta);
-        var cost = usage ? sessionCost(usage, d.meta && d.meta.pricing, peak) : null;
+        var cost = (sessionCost !== null && typeof sessionCost.cost === "number") ? sessionCost.cost : null;
         var inner = [];
-        if (cost !== null && cost > 0) {
+        if (cost !== null) {
           inner.push(h("span", { style: { color: "inherit" } },
             t("spent", { amount: sym + fmtMoney(cost) })));
           inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
@@ -475,7 +485,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     exports.apply = apply;
     // internal helpers exposed for the smoke tests (no runtime consumers)
-    exports._test = { deriveCounts, formatTokens, cacheHitPercent, sessionCost, fmtMoney, isPeak, statusOf, fmt, symbolOf };
+    exports._test = { deriveCounts, formatTokens, cacheHitPercent, fmtMoney, isPeak, statusOf, fmt, symbolOf };
     return module.exports;
   }
 });

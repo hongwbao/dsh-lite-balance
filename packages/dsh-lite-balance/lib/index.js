@@ -1,28 +1,45 @@
 /**
  * dsh-lite-balance host half.
  *
- * Registers one read-only HTTP route on the web profile's webServer service:
+ * Two jobs:
+ *   1. Balance — register GET /dsh-lite-balance/balance (host TTL cache,
+ *      ?refresh=1 bypass). The API key resolves through the harness
+ *      credentials service (env -> $DSH_HOME/.credentials.yaml -> .env).
+ *   2. Per-session spend — tap the global `llm/stream` event and price
+ *      EVERY request at the rate in effect when its usage event arrives
+ *      (peak/off-peak aware, price-timeline aware), accumulating a durable
+ *      per-session cost persisted to $DSH_HOME/storages/dsh-lite-balance.json.
+ *      GET /dsh-lite-balance/balance?session=<id> also returns that cost.
  *
- *   GET /dsh-lite-balance/balance            => cached balance (host TTL)
- *   GET /dsh-lite-balance/balance?refresh=1  => bypass cache, fetch fresh
- *
- * The API key is resolved through the harness's own credentials service
- * (`ctx.credentials`), i.e. the same chain the harness uses: process
- * environment -> $DSH_HOME/.credentials.yaml (refs.DEEPSEEK_API_KEY) -> .env
- * files. The value never reaches the browser. Optional overrides:
- *   DEEPSEEK_BALANCE_WARN_THRESHOLD     (number, default 10)
- *   DEEPSEEK_BALANCE_CRITICAL_THRESHOLD (number, default 3)
- *   DEEPSEEK_BALANCE_RECHARGE_URL       (string, default DeepSeek platform)
- *   DEEPSEEK_BALANCE_PEAK_WINDOWS       ("09:00-12:00,14:00-18:00", Beijing time)
- * Plugin `config` from the profile patch row wins over env, env wins over
- * defaults.
+ * Optional env overrides: DEEPSEEK_BALANCE_WARN_THRESHOLD,
+ * DEEPSEEK_BALANCE_CRITICAL_THRESHOLD, DEEPSEEK_BALANCE_RECHARGE_URL,
+ * DEEPSEEK_BALANCE_PEAK_WINDOWS. Plugin `config` wins over env, env over defaults.
  */
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
 const DEFAULT_RECHARGE_URL = 'https://platform.deepseek.com/top_up';
+const OFFICIAL_PROVIDER = 'deepseek-official';
 const HOST_CACHE_TTL_MS = 30_000;
 const FETCH_TIMEOUT_MS = 10_000;
+const BEIJING_OFFSET_MS = 8 * 3600_000;
+const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
+const STORE_PATH = join(DSH_HOME, 'storages', 'dsh-lite-balance.json');
+const MAX_SESSIONS = 500;
 
 export const name = 'dsh-lite-balance';
+
+/** Finite number or 0. */
+function finite(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** Finite number or a fallback. */
+function numberOr(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
 
 /** Parse one string field from the DeepSeek API into a finite number. */
 function toNumber(value) {
@@ -54,6 +71,175 @@ export function normalizeBalance(json) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Pricing timeline (CNY per 1M tokens; peak/off-peak since 2026-08-17).
+// Later policies win per model; ratesFor picks the policy active at `atMs`.
+// ---------------------------------------------------------------------------
+const PRICE_POLICIES = [
+  {
+    since: Date.UTC(2025, 1, 9),
+    models: { 'deepseek-chat': { cacheHit: 0.5, input: 2, output: 8 }, 'deepseek-reasoner': { cacheHit: 1, input: 4, output: 16 } },
+  },
+  {
+    since: Date.UTC(2026, 3, 24),
+    models: { 'deepseek-v4-flash': { cacheHit: 0.02, input: 1, output: 2 }, 'deepseek-v4-pro': { cacheHit: 0.025, input: 3, output: 6 } },
+  },
+  {
+    // 2026-08-17 00:00 Beijing = 2026-08-16T16:00Z; idle = half of peak.
+    since: Date.UTC(2026, 7, 16, 16),
+    peakOffPeak: true,
+    models: {
+      'deepseek-v4-flash': { cacheHit: [0.05, 0.1], input: [1.5, 3], output: [4.5, 9] },
+      'deepseek-v4-pro': { cacheHit: [0.15, 0.3], input: [4.5, 9], output: [13.5, 27] },
+      'deepseek-v4-flash-vision-exp': { cacheHit: [0.05, 0.1], input: [1.5, 3], output: [4.5, 9] },
+    },
+  },
+];
+
+const DEFAULT_PEAK_WINDOWS = [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }];
+
+/** Parse "HH:MM" into minutes since midnight, or null. */
+function parseHHMM(text) {
+  if (typeof text !== 'string') return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(text.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+/** True when Beijing time at `atMs` falls inside a peak window. */
+export function isBeijingPeak(atMs, peakWindows = DEFAULT_PEAK_WINDOWS) {
+  const dayMs = (atMs + BEIJING_OFFSET_MS) % 86_400_000;
+  const now = Math.floor(dayMs / 60_000);
+  for (const w of peakWindows) {
+    const start = parseHHMM(w?.start);
+    const end = parseHHMM(w?.end);
+    if (start === null || end === null) continue;
+    if (start <= end) { if (now >= start && now < end) return true; }
+    else { if (now >= start || now < end) return true; }
+  }
+  return false;
+}
+
+/** Effective rates ({ input, cacheHit, output }) for a model at `atMs`. */
+export function ratesFor(model, atMs, peakWindows = DEFAULT_PEAK_WINDOWS) {
+  let entry;
+  for (const policy of PRICE_POLICIES) {
+    if (atMs >= policy.since && policy.models[model] !== undefined) entry = policy;
+  }
+  if (entry === undefined) return null;
+  const rates = entry.models[model];
+  if (entry.peakOffPeak === true) {
+    const peak = isBeijingPeak(atMs, peakWindows) ? 1 : 0;
+    return { cacheHit: rates.cacheHit[peak], input: rates.input[peak], output: rates.output[peak] };
+  }
+  return rates;
+}
+
+/**
+ * Cost of one usage event in CNY, at the price active when it arrived.
+ * cacheWrite is billed at the input (cache-miss) price, matching DeepSeek.
+ * Returns null for unpriced models.
+ */
+export function costOf(model, usage, atMs, peakWindows = DEFAULT_PEAK_WINDOWS) {
+  const rates = ratesFor(model, atMs, peakWindows);
+  if (rates === null) return null;
+  usage = usage !== null && typeof usage === 'object' ? usage : {};
+  const input = finite(usage.inputTokens) * rates.input;
+  const cacheWrite = finite(usage.cacheWriteTokens) * rates.input;
+  const cacheRead = finite(usage.cacheReadTokens) * rates.cacheHit;
+  const output = finite(usage.outputTokens) * rates.output;
+  return (input + cacheWrite + cacheRead + output) / 1e6;
+}
+
+/** Merge plugin pricing overrides into the latest (peak/off-peak) policy. */
+function applyPricingOverrides(policies, pricing) {
+  const out = policies.map((p) => ({ ...p, models: { ...p.models } }));
+  const last = out[out.length - 1];
+  if (!last.peakOffPeak || !last.models[pricing.model]) return out;
+  const idle = numberOr(pricing.idleFactor, 0.5);
+  last.models[pricing.model] = {
+    cacheHit: [numberOr(pricing.inputHitPeakPerM, 0) * idle, numberOr(pricing.inputHitPeakPerM, 0)],
+    input: [numberOr(pricing.inputMissPeakPerM, 0) * idle, numberOr(pricing.inputMissPeakPerM, 0)],
+    output: [numberOr(pricing.outputPeakPerM, 0) * idle, numberOr(pricing.outputPeakPerM, 0)],
+  };
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Durable per-session cost store (mirrors the reference wallet store).
+// ---------------------------------------------------------------------------
+function emptyStore() {
+  return { version: 1, sessions: {} };
+}
+
+function normalizeStore(value) {
+  const sessions = {};
+  if (value && typeof value === 'object' && value.sessions && typeof value.sessions === 'object') {
+    for (const [id, s] of Object.entries(value.sessions)) {
+      if (id === '__proto__' || id === 'prototype') continue;
+      sessions[id] = { cost: numberOr(s?.cost, 0), priced: s?.priced !== false };
+    }
+  }
+  return { version: 1, sessions };
+}
+
+function loadStore() {
+  try {
+    return normalizeStore(JSON.parse(readFileSync(STORE_PATH, 'utf8')));
+  } catch {
+    return emptyStore();
+  }
+}
+
+let store = loadStore();
+let saveTimer = null;
+
+function persistStore(logger) {
+  if (saveTimer !== null) { clearTimeout(saveTimer); saveTimer = null; }
+  try {
+    mkdirSync(dirname(STORE_PATH), { recursive: true });
+    const tmp = STORE_PATH + '.tmp';
+    writeFileSync(tmp, JSON.stringify(store));
+    renameSync(tmp, STORE_PATH);
+  } catch (error) {
+    if (logger && typeof logger.warn === 'function') logger.warn('dsh-lite-balance: persist failed: ' + String(error));
+  }
+}
+
+function scheduleSave(logger) {
+  if (saveTimer !== null) return;
+  saveTimer = setTimeout(() => persistStore(logger), 500);
+}
+
+function capSessions() {
+  const keys = Object.keys(store.sessions);
+  if (keys.length <= MAX_SESSIONS) return;
+  for (let i = 0; i < keys.length - MAX_SESSIONS; i += 1) delete store.sessions[keys[i]];
+}
+
+/**
+ * Price one usage event into a session bucket. Only official DeepSeek calls
+ * are priced (we only show that account); unpriced models mark the bucket.
+ * Exported for tests; mutates `target.sessions`.
+ */
+export function accumulateSessionCost(target, options, usage, atMs, peakWindows = DEFAULT_PEAK_WINDOWS) {
+  const sessionId = options?.sessionId;
+  const provider = options?.provider;
+  const model = options?.model;
+  if (typeof sessionId !== 'string' || sessionId === '') return;
+  if (provider !== OFFICIAL_PROVIDER) return;
+  const entry = target.sessions[sessionId] ?? (target.sessions[sessionId] = { cost: 0, priced: true });
+  const cost = costOf(model, usage, atMs, peakWindows);
+  if (cost === null) { entry.priced = false; return; }
+  entry.cost += cost;
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
 /** Effective numeric threshold: config > env > default. */
 function thresholdOf(configValue, envName, fallback) {
   if (typeof configValue === 'number' && Number.isFinite(configValue)) return configValue;
@@ -65,10 +251,7 @@ function thresholdOf(configValue, envName, fallback) {
   return fallback;
 }
 
-/**
- * Normalize one peak-window entry into { start, end } (HH:MM strings), or null.
- * Accepts { start, end } objects and "09:00-12:00" strings.
- */
+/** Normalize one peak-window entry into { start, end }, or null. */
 function normalizePeakWindow(item) {
   if (item && typeof item.start === 'string' && typeof item.end === 'string') {
     return { start: item.start, end: item.end };
@@ -91,13 +274,13 @@ function resolvePeakWindows(config) {
     const fromEnv = env.split(',').map(normalizePeakWindow).filter(Boolean);
     if (fromEnv.length > 0) return fromEnv;
   }
-  return [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }];
+  return DEFAULT_PEAK_WINDOWS;
 }
 
 /**
- * Peak-hour prices per 1M tokens (CNY), from the official DeepSeek pricing
- * page (Aug 2026). Idle prices are peak * idleFactor (the scheme prices the
- * idle window at half of peak). deepseek-v4-flash is the harness default.
+ * Peak-hour prices (CNY/1M) for the ACTIVE model, for the meta/display. The
+ * historical timeline above drives per-event costing; this reports the
+ * current rate so a user can see/override it.
  */
 const PRICING_BY_MODEL = {
   'deepseek-v4-flash': { inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.10, outputPeakPerM: 9.0 },
@@ -105,12 +288,6 @@ const PRICING_BY_MODEL = {
   'deepseek-v4-flash-vision-exp': { inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.10, outputPeakPerM: 9.0 },
 };
 
-/** Finite number or a fallback. */
-function numberOr(value, fallback) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-/** Resolve the pricing table the client uses to estimate session spend. */
 function resolvePricing(config) {
   const model = (config?.pricing?.model) ?? config?.pricingModel ?? 'deepseek-v4-flash';
   const base = PRICING_BY_MODEL[model] ?? PRICING_BY_MODEL['deepseek-v4-flash'];
@@ -127,15 +304,10 @@ function resolvePricing(config) {
 /** Resolve the runtime settings shared by the route and the client meta. */
 function resolveSettings(config) {
   return {
-    refreshMs: typeof config?.refreshMs === 'number' && config.refreshMs > 0
-      ? Math.round(config.refreshMs)
-      : 60_000,
+    refreshMs: typeof config?.refreshMs === 'number' && config.refreshMs > 0 ? Math.round(config.refreshMs) : 60_000,
     warnThreshold: thresholdOf(config?.warnThreshold, 'DEEPSEEK_BALANCE_WARN_THRESHOLD', 10),
     criticalThreshold: thresholdOf(config?.criticalThreshold, 'DEEPSEEK_BALANCE_CRITICAL_THRESHOLD', 3),
     rechargeUrl: config?.rechargeUrl ?? process.env.DEEPSEEK_BALANCE_RECHARGE_URL ?? DEFAULT_RECHARGE_URL,
-    // DeepSeek peak windows, Beijing time — the client colors the peak/idle
-    // indicator from these; everything outside is idle. Default 09:00–12:00
-    // and 14:00–18:00.
     peakWindows: resolvePeakWindows(config),
     pricing: resolvePricing(config),
   };
@@ -143,15 +315,6 @@ function resolveSettings(config) {
 
 /**
  * Resolve the DeepSeek API key exactly the way the harness itself does.
- *
- * The web profile mounts a credentials provider (dsh-credentials-local) as
- * `ctx.credentials`; `resolve('DEEPSEEK_API_KEY')` layers the process
- * environment, then `$DSH_HOME/.credentials.yaml` (refs:), then .env files —
- * the same chain the harness's own LLM providers use. No service mounted
- * (foreign profile / tests): fall back to the plain environment variable.
- *
- * @param credentials - the optional `ctx.credentials` service.
- * @returns the key, or undefined when nowhere configured.
  */
 async function resolveApiKey(credentials) {
   if (credentials && typeof credentials.resolve === 'function') {
@@ -159,7 +322,7 @@ async function resolveApiKey(credentials) {
       const resolved = await credentials.resolve('DEEPSEEK_API_KEY');
       if (resolved && typeof resolved.value === 'string' && resolved.value !== '') return resolved.value;
     } catch {
-      // credentials service error: degrade to the plain environment variable
+      // degrade to the plain environment variable
     }
   }
   const env = process.env.DEEPSEEK_API_KEY;
@@ -204,10 +367,38 @@ async function fetchBalanceOnce(key) {
   }
 }
 
-/** Cordis plugin body: mount the balance route once webServer exists. */
+/** Cordis plugin body: tap llm/stream and mount the balance route. */
 export function apply(ctx, config) {
+  const settings = resolveSettings(config);
+  const policies = applyPricingOverrides(PRICE_POLICIES, settings.pricing);
+
+  // Price every official LLM request at the rate active when its usage
+  // event arrives — historical spend stays stable across peak/off-peak.
+  const usageTap = (options, next) => {
+    const downstream = next();
+    return (async function* () {
+      let usage = null;
+      let usageAt = 0;
+      try {
+        for await (const chunk of downstream) {
+          if (chunk !== null && chunk !== undefined && chunk.type === 'usage' && chunk.usage !== undefined) {
+            usage = chunk.usage;
+            usageAt = Date.now();
+          }
+          yield chunk;
+        }
+      } finally {
+        if (usage !== null) {
+          accumulateSessionCost(store, options, usage, usageAt, settings.peakWindows);
+          capSessions();
+          scheduleSave(ctx.logger);
+        }
+      }
+    })();
+  };
+  ctx.on('llm/stream', usageTap, { global: true });
+
   ctx.inject(['webServer'], (hostCtx) => {
-    const settings = resolveSettings(config);
     let cache = null; // { at: number, payload: object }
 
     const handler = async (req, res) => {
@@ -238,12 +429,18 @@ export function apply(ctx, config) {
           return;
         }
       }
-      sendJson(res, 200, {
+      const body = {
         ok: true,
         fetchedAt: cache.at,
         meta: settings,
         ...cache.payload,
-      });
+      };
+      const sessionId = url.searchParams.get('session');
+      if (sessionId !== null && sessionId !== '') {
+        const entry = store.sessions[sessionId];
+        body.sessionCost = entry ? { cost: entry.cost, priced: entry.priced } : null;
+      }
+      sendJson(res, 200, body);
     };
 
     hostCtx.effect(() => (

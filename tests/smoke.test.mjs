@@ -28,6 +28,7 @@ const fakeWebServer = {
 };
 const fakeCredentials = { resolve: async () => undefined };
 const fakeCtx = {
+  on() { return () => {}; },
   inject(list, cb) {
     cb({
       webServer: fakeWebServer,
@@ -184,12 +185,26 @@ assert(T.isPeak(peakMeta, new Date('2026-08-22T08:59:00+08:00')) === false, '08:
 assert(T.isPeak(peakMeta, new Date('2026-08-22T18:00:00+08:00')) === false, '18:00 Beijing is idle (window end exclusive)');
 assert(T.isPeak({}, new Date('2026-08-22T10:00:00+08:00')) === true, 'defaults to 09:00-12:00/14:00-18:00 when meta absent');
 
-console.log('== client: session spend estimate ==');
-const flashPricing = { model: 'deepseek-v4-flash', inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.1, outputPeakPerM: 9.0, idleFactor: 0.5 };
-const usage = { uncachedInputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 0, outputTokens: 500 };
-assert(Math.abs(T.sessionCost(usage, flashPricing, true) - 0.0076) < 1e-9, 'peak spend = 0.0076 (¥)');
-assert(Math.abs(T.sessionCost(usage, flashPricing, false) - 0.0038) < 1e-9, 'idle spend = half (0.0038)');
-assert(T.sessionCost(usage, null, true) === null, 'no pricing -> null spend');
+console.log('== host: per-event pricing (peak/off-peak, timeline) ==');
+const PEAK_MS = Date.UTC(2026, 7, 22, 2, 0, 0); // 10:00 Beijing -> peak
+const IDLE_MS = Date.UTC(2026, 7, 22, 5, 0, 0); // 13:00 Beijing -> idle
+assert(mod.isBeijingPeak(PEAK_MS) === true, '10:00 Beijing is peak');
+assert(mod.isBeijingPeak(IDLE_MS) === false, '13:00 Beijing is idle');
+const rPeak = mod.ratesFor('deepseek-v4-flash', PEAK_MS);
+assert(rPeak && rPeak.input === 3 && rPeak.cacheHit === 0.1 && rPeak.output === 9, 'flash peak rates {3, 0.1, 9}');
+const rIdle = mod.ratesFor('deepseek-v4-flash', IDLE_MS);
+assert(rIdle && rIdle.input === 1.5 && rIdle.cacheHit === 0.05 && rIdle.output === 4.5, 'flash idle rates {1.5, 0.05, 4.5}');
+const usage = { inputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 0, outputTokens: 500 };
+assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, PEAK_MS) - 0.0076) < 1e-9, 'peak spend = 0.0076 (¥)');
+assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, IDLE_MS) - 0.0038) < 1e-9, 'idle spend = half (0.0038)');
+assert(mod.costOf('deepseek-v4-flash', { ...usage, cacheWriteTokens: 500 }, PEAK_MS) === 0.0091, 'cacheWrite billed at input price');
+assert(mod.costOf('unknown-model', usage, PEAK_MS) === null, 'unpriced model -> null');
+const s = { sessions: {} };
+mod.accumulateSessionCost(s, { sessionId: 's1', provider: 'deepseek-official', model: 'deepseek-v4-flash' }, usage, PEAK_MS);
+assert(s.sessions.s1.cost === 0.0076 && s.sessions.s1.priced === true, 'official usage accumulated per event');
+const s2 = { sessions: {} };
+mod.accumulateSessionCost(s2, { sessionId: 's1', provider: 'third-party-x', model: 'deepseek-v4-flash' }, usage, PEAK_MS);
+assert(s2.sessions.s1 === undefined, 'non-official provider not priced');
 assert(T.fmtMoney(0.0076) === '0.0076' && T.fmtMoney(1.2) === '1.20' && T.fmtMoney(0) === '0.00', 'fmtMoney formatting');
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
