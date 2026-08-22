@@ -27,8 +27,9 @@ const fakeWebServer = {
   register(route) { routes.push(route); return () => { const i = routes.indexOf(route); if (i >= 0) routes.splice(i, 1); }; },
 };
 const fakeCredentials = { resolve: async () => undefined };
+const capturedEvents = {};
 const fakeCtx = {
-  on() { return () => {}; },
+  on(name, fn) { capturedEvents[name] = fn; return () => {}; },
   inject(list, cb) {
     cb({
       webServer: fakeWebServer,
@@ -70,6 +71,28 @@ delete process.env.DEEPSEEK_API_KEY;
 
 out = await call({ method: 'POST', url: '/dsh-lite-balance/balance' });
 assert(out.status === 405, 'non-GET -> 405');
+
+console.log('== host: session/event -> accumulated session cost over the route ==');
+const emit = capturedEvents['session/event'];
+assert(typeof emit === 'function', 'host registered a session/event listener');
+const sid = 'smoke-cost-' + Date.now();
+// Monday 2026-08-24 10:00 Beijing = peak hour.
+emit({ id: sid }, { type: 'request/header', data: { header: { config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } } } });
+emit({ id: sid }, { type: 'assistant/message', data: { usage: { inputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 0, outputTokens: 500 } }, createdAt: Date.UTC(2026, 7, 24, 2, 0, 0) });
+// Restore a resolvable key, then mock the DeepSeek balance fetch so the
+// route reaches the sessionCost branch.
+fakeCredentials.resolve = async () => ({ value: 'sk-test', source: 'file' });
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (url) => {
+  if (String(url).includes('api.deepseek.com/user/balance')) {
+    return new Response(JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '5.00', granted_balance: '0', topped_up_balance: '5.00' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  return realFetch(url);
+};
+const out2 = await call({ method: 'GET', url: '/dsh-lite-balance/balance?session=' + sid + '&refresh=1' });
+globalThis.fetch = realFetch;
+assert(out2.status === 200 && out2.body.ok === true && out2.body.total === 5, 'route returns 200 with mocked balance');
+assert(out2.body.sessionCost !== null && Math.abs(out2.body.sessionCost.cost - 0.0076) < 1e-9, 'session/event accumulation served as sessionCost over the route');
 
 for (const e of effects) { if (typeof e.d === 'function') e.d(); }
 assert(routes.length === 0, 'effect disposer removes the route');
@@ -178,25 +201,30 @@ assert(T.statusOf(10, { warnThreshold: 10, criticalThreshold: 3 }) === 'warn', '
 assert(T.statusOf(3, { warnThreshold: 10, criticalThreshold: 3 }) === 'warn', '3 is warn (yellow)');
 assert(T.statusOf(2.99, { warnThreshold: 10, criticalThreshold: 3 }) === 'danger', '<3 danger (red)');
 const peakMeta = { peakWindows: [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }] };
-assert(T.isPeak(peakMeta, new Date('2026-08-22T10:00:00+08:00')) === true, '10:00 Beijing is peak (09:00-12:00)');
-assert(T.isPeak(peakMeta, new Date('2026-08-22T15:00:00+08:00')) === true, '15:00 Beijing is peak (14:00-18:00)');
-assert(T.isPeak(peakMeta, new Date('2026-08-22T13:00:00+08:00')) === false, '13:00 Beijing is idle');
-assert(T.isPeak(peakMeta, new Date('2026-08-22T08:59:00+08:00')) === false, '08:59 Beijing is idle');
-assert(T.isPeak(peakMeta, new Date('2026-08-22T18:00:00+08:00')) === false, '18:00 Beijing is idle (window end exclusive)');
-assert(T.isPeak({}, new Date('2026-08-22T10:00:00+08:00')) === true, 'defaults to 09:00-12:00/14:00-18:00 when meta absent');
+assert(T.isPeak(peakMeta, new Date('2026-08-24T10:00:00+08:00')) === true, 'Mon 10:00 Beijing is peak (09:00-12:00)');
+assert(T.isPeak(peakMeta, new Date('2026-08-24T15:00:00+08:00')) === true, 'Mon 15:00 Beijing is peak (14:00-18:00)');
+assert(T.isPeak(peakMeta, new Date('2026-08-24T13:00:00+08:00')) === false, 'Mon 13:00 Beijing is idle');
+assert(T.isPeak(peakMeta, new Date('2026-08-24T08:59:00+08:00')) === false, 'Mon 08:59 Beijing is idle');
+assert(T.isPeak(peakMeta, new Date('2026-08-24T18:00:00+08:00')) === false, 'Mon 18:00 Beijing is idle (window end exclusive)');
+assert(T.isPeak(peakMeta, new Date('2026-08-22T10:00:00+08:00')) === false, 'Sat 10:00 Beijing is idle all day (weekend)');
+assert(T.isPeak(peakMeta, new Date('2026-08-23T15:00:00+08:00')) === false, 'Sun 15:00 Beijing is idle all day (weekend)');
+assert(T.isPeak({}, new Date('2026-08-24T10:00:00+08:00')) === true, 'defaults to 09:00-12:00/14:00-18:00 when meta absent');
 
 console.log('== host: per-event pricing (peak/off-peak, timeline) ==');
-const PEAK_MS = Date.UTC(2026, 7, 22, 2, 0, 0); // 10:00 Beijing -> peak
-const IDLE_MS = Date.UTC(2026, 7, 22, 5, 0, 0); // 13:00 Beijing -> idle
-assert(mod.isBeijingPeak(PEAK_MS) === true, '10:00 Beijing is peak');
-assert(mod.isBeijingPeak(IDLE_MS) === false, '13:00 Beijing is idle');
+const PEAK_MS = Date.UTC(2026, 7, 24, 2, 0, 0); // Mon 10:00 Beijing -> peak
+const IDLE_MS = Date.UTC(2026, 7, 24, 5, 0, 0); // Mon 13:00 Beijing -> idle
+const SAT_PEAK = Date.UTC(2026, 7, 22, 2, 0, 0); // Sat 10:00 Beijing -> weekend idle
+assert(mod.isBeijingPeak(PEAK_MS) === true, 'Mon 10:00 Beijing is peak');
+assert(mod.isBeijingPeak(IDLE_MS) === false, 'Mon 13:00 Beijing is idle');
+assert(mod.isBeijingPeak(SAT_PEAK) === false, 'Sat 10:00 Beijing is idle all day (weekend)');
 const rPeak = mod.ratesFor('deepseek-v4-flash', PEAK_MS);
 assert(rPeak && rPeak.input === 3 && rPeak.cacheHit === 0.1 && rPeak.output === 9, 'flash peak rates {3, 0.1, 9}');
 const rIdle = mod.ratesFor('deepseek-v4-flash', IDLE_MS);
 assert(rIdle && rIdle.input === 1.5 && rIdle.cacheHit === 0.05 && rIdle.output === 4.5, 'flash idle rates {1.5, 0.05, 4.5}');
 const usage = { inputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 0, outputTokens: 500 };
-assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, PEAK_MS) - 0.0076) < 1e-9, 'peak spend = 0.0076 (¥)');
+assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, PEAK_MS) - 0.0076) < 1e-9, 'weekday peak spend = 0.0076 (¥)');
 assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, IDLE_MS) - 0.0038) < 1e-9, 'idle spend = half (0.0038)');
+assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, SAT_PEAK) - 0.0038) < 1e-9, 'weekend uses idle price even at peak hours');
 assert(mod.costOf('deepseek-v4-flash', { ...usage, cacheWriteTokens: 500 }, PEAK_MS) === 0.0091, 'cacheWrite billed at input price');
 assert(mod.costOf('unknown-model', usage, PEAK_MS) === null, 'unpriced model -> null');
 const s = { sessions: {} };
@@ -205,7 +233,7 @@ assert(s.sessions.s1.cost === 0.0076 && s.sessions.s1.priced === true, 'official
 const s2 = { sessions: {} };
 mod.accumulateSessionCost(s2, { sessionId: 's1', provider: 'third-party-x', model: 'deepseek-v4-flash' }, usage, PEAK_MS);
 assert(s2.sessions.s1 === undefined, 'non-official provider not priced');
-assert(T.fmtMoney(0.0076) === '0.0076' && T.fmtMoney(1.2) === '1.20' && T.fmtMoney(0) === '0.00', 'fmtMoney formatting');
+assert(T.fmtMoney(0.0076) === '0.01' && T.fmtMoney(1.2) === '1.20' && T.fmtMoney(0) === '0.00', 'fmtMoney always 2 decimals');
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

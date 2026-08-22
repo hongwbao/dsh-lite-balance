@@ -179,15 +179,10 @@ window.__ModuleLoader__.load({
       if (n < 1e6) return scaled(n / 1e3) + "K";
       return scaled(n / 1e6) + "M";
     }
-    /** Money formatting: 2 decimals at/above ¥1, up to 4 below (trim trailing zeros). */
+    /** Money formatting for spend: always 2 decimals. */
     function fmtMoney(n) {
-      if (n === null || n === undefined || !isFinite(n)) return "—";
-      if (n >= 1) return n.toFixed(2);
-      if (n <= 0) return "0.00";
-      var s = n.toFixed(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
-      if (s.indexOf(".") === -1) return s + ".00";
-      if (s.indexOf(".") !== -1 && s.length - s.indexOf(".") - 1 < 2) s = s.toFixed(2);
-      return s;
+      if (n === null || n === undefined || !isFinite(n)) return "0.00";
+      return n.toFixed(2);
     }
     /** Round a cache-read ratio to an integer percentage, with positive ties rounded up. */
     function roundedIntegerPercent(cacheReadTokens, denominator) {
@@ -260,10 +255,14 @@ window.__ModuleLoader__.load({
     }
     /** True while Beijing time falls inside any configured peak window. */
     function isPeak(meta, date) {
+      var t = date || new Date();
+      // Weekends (Sat/Sun) are idle-priced all day — never peak.
+      var bjDow = new Date(t.getTime() + 8 * 3600000).getUTCDay();
+      if (bjDow === 0 || bjDow === 6) return false;
       var windows = (meta && Array.isArray(meta.peakWindows) && meta.peakWindows.length > 0)
         ? meta.peakWindows
         : [{ start: "09:00", end: "12:00" }, { start: "14:00", end: "18:00" }];
-      var now = beijingMinutes(date || new Date());
+      var now = beijingMinutes(t);
       for (var i = 0; i < windows.length; i++) {
         var start = parseHHMM(windows[i] && windows[i].start);
         var end = parseHHMM(windows[i] && windows[i].end);
@@ -348,13 +347,12 @@ window.__ModuleLoader__.load({
           : st === "warn" ? "var(--dsw-alias-state-warn-primary)"
           : "inherit";
         var sym = symbolOf(d.currency);
-        var cost = (sessionCost !== null && typeof sessionCost.cost === "number") ? sessionCost.cost : null;
+        // Spend is always shown (¥0.00 until the host reports usage).
+        var cost = (sessionCost !== null && typeof sessionCost.cost === "number") ? sessionCost.cost : 0;
         var inner = [];
-        if (cost !== null) {
-          inner.push(h("span", { style: { color: "inherit" } },
-            t("spent", { amount: sym + fmtMoney(cost) })));
-          inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
-        }
+        inner.push(h("span", { style: { color: "inherit" } },
+          t("spent", { amount: sym + fmtMoney(cost) })));
+        inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
         inner.push(h("span", { style: { color: color, fontWeight: 500 } },
           t("balance", { amount: sym + fmt(d.total) })));
         balanceSeg = h("span", {

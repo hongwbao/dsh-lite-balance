@@ -111,6 +111,9 @@ function parseHHMM(text) {
 
 /** True when Beijing time at `atMs` falls inside a peak window. */
 export function isBeijingPeak(atMs, peakWindows = DEFAULT_PEAK_WINDOWS) {
+  // Weekends (Sat/Sun) are priced at the idle rate all day — no peak/off-peak.
+  const bjDow = new Date(atMs + BEIJING_OFFSET_MS).getUTCDay();
+  if (bjDow === 0 || bjDow === 6) return false;
   const dayMs = (atMs + BEIJING_OFFSET_MS) % 86_400_000;
   const now = Math.floor(dayMs / 60_000);
   for (const w of peakWindows) {
@@ -367,36 +370,45 @@ async function fetchBalanceOnce(key) {
   }
 }
 
-/** Cordis plugin body: tap llm/stream and mount the balance route. */
+/** Cordis plugin body: watch session usage and mount the balance route. */
 export function apply(ctx, config) {
   const settings = resolveSettings(config);
   const policies = applyPricingOverrides(PRICE_POLICIES, settings.pricing);
 
   // Price every official LLM request at the rate active when its usage
   // event arrives — historical spend stays stable across peak/off-peak.
-  const usageTap = (options, next) => {
-    const downstream = next();
-    return (async function* () {
-      let usage = null;
-      let usageAt = 0;
-      try {
-        for await (const chunk of downstream) {
-          if (chunk !== null && chunk !== undefined && chunk.type === 'usage' && chunk.usage !== undefined) {
-            usage = chunk.usage;
-            usageAt = Date.now();
-          }
-          yield chunk;
-        }
-      } finally {
-        if (usage !== null) {
-          accumulateSessionCost(store, options, usage, usageAt, settings.peakWindows);
-          capSessions();
-          scheduleSave(ctx.logger);
-        }
+  //
+  // Source of truth is the session event log (the same assistant/message
+  // usage the harness own token meter folds): request/header records the
+  // provider/model route for a request; assistant/message carries the
+  // step's final token usage.
+  const sessionRoutes = new Map();
+  ctx.on('session/event', (session, event) => {
+    try {
+      if (event.type === 'request/header' && event.data?.header?.config) {
+        sessionRoutes.set(session.id, {
+          provider: event.data.header.config.provider,
+          model: event.data.header.config.model,
+        });
+        return;
       }
-    })();
-  };
-  ctx.on('llm/stream', usageTap, { global: true });
+      if (event.type === 'assistant/message' && event.data?.usage !== undefined) {
+        const route = sessionRoutes.get(session.id) ?? {};
+        const atMs = typeof event.createdAt === 'number' ? event.createdAt : Date.now();
+        accumulateSessionCost(store, {
+          sessionId: session.id,
+          provider: route.provider ?? 'deepseek-official',
+          model: route.model ?? settings.pricing.model,
+        }, event.data.usage, atMs, settings.peakWindows);
+        capSessions();
+        scheduleSave(ctx.logger);
+      }
+    } catch (error) {
+      if (ctx.logger && typeof ctx.logger.warn === 'function') {
+        ctx.logger.warn('dsh-lite-balance: session/event: ' + String(error));
+      }
+    }
+  });
 
   ctx.inject(['webServer'], (hostCtx) => {
     let cache = null; // { at: number, payload: object }

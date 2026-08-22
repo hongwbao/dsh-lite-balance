@@ -10,8 +10,8 @@ DSH Web 的轻量余额显示器：在侧边栏底部（设置按钮旁）常驻
 
 - **输入框下方统计条**（替换内置统计）：`轮次/步数 | 缓存命中 | 输入/输出 Token | 消耗 + 余额 | 高峰/空闲`
 - 余额状态配色：`> warnThreshold` 默认色 / `[criticalThreshold, warnThreshold]` 警告色（黄）/ `< criticalThreshold` 危险色（红 + 低余额 toast）
-- 余额段同时显示**当前会话消耗金额**（host 端 tap `llm/stream`，**每笔请求按其到达时的价格计价**，高峰/空闲与历史费率时间线感知；消耗逐笔累加、持久化）与**账户剩余余额**；点击余额跳转充值页、双击强制刷新
-- 高峰/空闲指示（北京时间，默认高峰 09:00–12:00、14:00–18:00，其余空闲；高峰红 / 空闲绿）
+- 余额段同时显示**当前会话消耗金额**（host 端监听 `session/event`，**每笔请求按其到达时的价格计价**，高峰/空闲与历史费率时间线感知；消耗逐笔累加、持久化）与**账户剩余余额**；消耗**常显**（无消耗显示 ¥0.00）且**只保留两位小数**；点击余额跳转充值页、双击强制刷新
+- 高峰/空闲指示（北京时间，默认高峰 09:00–12:00、14:00–18:00，其余空闲；**周末（周六/周日）全天按空闲价**；高峰红 / 空闲绿）
 - 自动刷新（默认 60s，可配）
 - 中英双语（跟随 DSH 语言设置）、深浅主题（使用 DSH 的 `--dsw-alias-*` 设计变量）
 - API Key 通过 harness 自身 credentials 服务解析，永不进入浏览器
@@ -112,7 +112,7 @@ node tests/smoke.test.mjs
 
 - host 端注册 `GET /dsh-lite-balance/balance`（`?refresh=1` 强制绕过缓存；`?session=<id>` 附带该会话累计消耗），30s 内存 TTL，10s 请求超时
 - DeepSeek 余额接口：`GET https://api.deepseek.com/user/balance`，`Authorization: Bearer $DEEPSEEK_API_KEY`（key 来自 harness credentials 服务）
-- **会话消耗**：host 端 tap 全局 `llm/stream` 事件，捕获每个请求的 usage + 到达时间，**按当时生效的价格逐笔计价**（高峰/空闲 + 历史费率时间线），`cacheWrite` 按输入（未命中）价计费；累计结果持久化到 `$DSH_HOME/storages/dsh-lite-balance.json`
-- 高峰/空闲判定按北京时间（UTC+8）计算，高峰窗口默认 09:00–12:00、14:00–18:00，可配
+- **会话消耗**：host 端监听 `session/event`（`request/header` 记录 model/provider，`assistant/message` 携带每步 usage），**按当时生效的价格逐笔计价**（高峰/空闲 + 历史费率时间线 + 周末规则），`cacheWrite` 按输入（未命中）价计费；累计结果持久化到 `$DSH_HOME/storages/dsh-lite-balance.json`
+- 高峰/空闲判定按北京时间（UTC+8）计算，高峰窗口默认 09:00–12:00、14:00–18:00（可配）；**周末（周六/周日）全天按空闲价**
 - 统计条注册在 `conversation.composer.dock` 且 **id 复用内置的 `stats`、priority -1**（槽位契约 replaceRisk: none + lowest renders）——官方支持的同位替换；低余额 toast 挂 `shell.overlay`
 - 样式只用 DSH 主题变量（`--dsw-alias-*`），深浅主题自动适配
