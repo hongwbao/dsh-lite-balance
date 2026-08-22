@@ -10,6 +10,8 @@
 #           warnThreshold: 10         # below this the chip turns warning color
 #           criticalThreshold: 3      # below this the chip turns danger + toast
 #           rechargeUrl: https://platform.deepseek.com/top_up
+#           offPeakStart: '00:30'   # 低谷时段开始（北京时间 HH:MM）
+#           offPeakEnd: '08:30'     # 低谷时段结束（北京时间 HH:MM）
 - insert:
     - id: lite-balance
       name: 'dsh-lite-balance'

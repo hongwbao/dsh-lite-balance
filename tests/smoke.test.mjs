@@ -111,7 +111,7 @@ const fakeClientCtx = {
   effect(fn) { const d = fn(); if (typeof d === 'function') d(); },
 };
 clientMod.apply(fakeClientCtx);
-assert(Object.keys(injections).sort().join(',') === 'shell.overlay,sidebar.footer.action', 'injects into sidebar.footer.action + shell.overlay');
+assert(Object.keys(injections).sort().join(',') === 'conversation.composer.dock,shell.overlay,sidebar.footer.action', 'injects into sidebar footer + composer dock + overlay');
 for (const cb of Object.values(injections)) cb();
 const chip = registrations.find((r) => r.opts.id === 'dsh-lite-balance');
 const toast = registrations.find((r) => r.opts.id === 'dsh-lite-balance-toast');
@@ -119,6 +119,30 @@ assert(chip && chip.opts.name === 'sidebar.footer.action' && chip.opts.order ===
 assert(toast && toast.opts.name === 'shell.overlay', 'toast registered in shell.overlay');
 assert(typeof chip.opts.label === 'function' && chip.opts.label() === 'label', 'chip label thunk resolves through locale');
 assert(typeof chip.opts.inject().t === 'function', 'chip receives bound t');
+
+const stats = registrations.find((r) => r.opts.id === 'stats');
+assert(stats && stats.opts.name === 'conversation.composer.dock' && typeof stats.comp === 'function', 'replaces built-in stats: composer.dock id "stats" registered');
+
+console.log('== client: stats-line helpers ==');
+const T = clientMod._test;
+assert(T.deriveCounts([
+  { kind: 'user', turn: 0 },
+  { kind: 'assistant', turn: 0 },
+  { kind: 'tool-result', turn: 0 },
+  { kind: 'assistant', turn: 0 },
+  { kind: 'assistant', turn: 1 },
+]).steps === 3, 'deriveCounts counts assistant steps');
+const turns = T.deriveCounts([{ kind: 'assistant', turn: 0 }, { kind: 'assistant', turn: 1 }, { kind: 'assistant', turn: 1 }]).turns;
+assert(turns === 2, 'deriveCounts counts distinct turns');
+assert(T.formatTokens(517) === '517' && T.formatTokens(12200) === '12.2K' && T.formatTokens(8200000) === '8.2M', 'formatTokens K/M compaction');
+assert(T.statusOf(10.01, { warnThreshold: 10, criticalThreshold: 3 }) === 'ok', '>10 default color');
+assert(T.statusOf(10, { warnThreshold: 10, criticalThreshold: 3 }) === 'warn', '10 is warn (yellow)');
+assert(T.statusOf(3, { warnThreshold: 10, criticalThreshold: 3 }) === 'warn', '3 is warn (yellow)');
+assert(T.statusOf(2.99, { warnThreshold: 10, criticalThreshold: 3 }) === 'danger', '<3 danger (red)');
+const offPeakMeta = { offPeakStart: '00:30', offPeakEnd: '08:30' };
+assert(T.isOffPeak(offPeakMeta, new Date('2026-08-22T01:00:00+08:00')) === true, '01:00 Beijing is off-peak');
+assert(T.isOffPeak(offPeakMeta, new Date('2026-08-22T12:00:00+08:00')) === false, '12:00 Beijing is peak');
+assert(T.isOffPeak({}, new Date('2026-08-22T12:00:00+08:00')) === false, 'defaults window when meta absent');
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

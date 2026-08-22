@@ -13,6 +13,8 @@
  *   DEEPSEEK_BALANCE_WARN_THRESHOLD     (number, default 10)
  *   DEEPSEEK_BALANCE_CRITICAL_THRESHOLD (number, default 3)
  *   DEEPSEEK_BALANCE_RECHARGE_URL       (string, default DeepSeek platform)
+ *   DEEPSEEK_BALANCE_OFFPEAK_START      (HH:MM Beijing, default 00:30)
+ *   DEEPSEEK_BALANCE_OFFPEAK_END        (HH:MM Beijing, default 08:30)
  * Plugin `config` from the profile patch row wins over env, env wins over
  * defaults.
  */
@@ -73,6 +75,11 @@ function resolveSettings(config) {
     warnThreshold: thresholdOf(config?.warnThreshold, 'DEEPSEEK_BALANCE_WARN_THRESHOLD', 10),
     criticalThreshold: thresholdOf(config?.criticalThreshold, 'DEEPSEEK_BALANCE_CRITICAL_THRESHOLD', 3),
     rechargeUrl: config?.rechargeUrl ?? process.env.DEEPSEEK_BALANCE_RECHARGE_URL ?? DEFAULT_RECHARGE_URL,
+    // DeepSeek off-peak (idle) window, Beijing time — the client colors the
+    // peak/off-peak indicator from these. Default 00:30–08:30 (the official
+    // off-peak window; the Aug 2026 scheme prices it at half of peak).
+    offPeakStart: config?.offPeakStart ?? process.env.DEEPSEEK_BALANCE_OFFPEAK_START ?? '00:30',
+    offPeakEnd: config?.offPeakEnd ?? process.env.DEEPSEEK_BALANCE_OFFPEAK_END ?? '08:30',
   };
 }
 
