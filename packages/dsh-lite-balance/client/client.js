@@ -584,13 +584,33 @@ window.__ModuleLoader__.load({
       // drag (no stale-closure races) and can be cleared instantly.
       var dragRef = React.useRef(null);
 
-      function measureStep() {
-        var rows = document.querySelectorAll(".dsh-lb-settings .dsh-lb-settings-row");
+      function measureStep(panel) {
+        var rows = (panel || document).querySelectorAll(".dsh-lb-settings-row");
         if (rows.length > 1) {
           var step = rows[1].offsetTop - rows[0].offsetTop;
           if (step > 0) return step;
         }
         return 32;
+      }
+      /** WYSIWYG drop: the slot whose top is closest to the dragged row. */
+      function dropIndexFromDom(d) {
+        var rows = (d.panel || document).querySelectorAll(".dsh-lb-settings-row");
+        if (rows.length === 0) return d.hoverIndex;
+        var draggedTop = null;
+        var tops = [];
+        for (var i = 0; i < rows.length; i++) {
+          var top = rows[i].offsetTop;
+          tops.push(top);
+          if (rows[i].getAttribute && rows[i].getAttribute("data-id") === d.id) draggedTop = top + d.deltaY;
+        }
+        if (draggedTop === null) return d.hoverIndex;
+        var best = 0;
+        var bestDist = Infinity;
+        for (var j = 0; j < tops.length; j++) {
+          var dist = Math.abs(tops[j] - draggedTop);
+          if (dist < bestDist) { bestDist = dist; best = j; }
+        }
+        return best;
       }
       function cleanupDragListeners() {
         document.removeEventListener("pointermove", onDocPointerMove);
@@ -609,8 +629,9 @@ window.__ModuleLoader__.load({
         if (d === null) return;
         dragRef.current = null;
         try {
+          var targetIndex = dropIndexFromDom(d);
           var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
-          var targetId = ids[d.hoverIndex];
+          var targetId = ids[targetIndex];
           if (targetId !== undefined && targetId !== d.id) reorderModule(d.id, targetId);
         } catch (err) {
           // a reorder error must never leave the drag stuck
@@ -635,8 +656,10 @@ window.__ModuleLoader__.load({
       function handleDown(m, e) {
         if (e.button !== undefined && e.button !== 0) return;
         e.preventDefault();
+        var panel = (e.currentTarget && typeof e.currentTarget.closest === "function")
+          ? e.currentTarget.closest(".dsh-lb-settings") : null;
         var index = modules.findIndex(function (x) { return x.id === m.id; });
-        var next = { id: m.id, index: index, startY: e.clientY, deltaY: 0, hoverIndex: index, step: measureStep() };
+        var next = { id: m.id, index: index, startY: e.clientY, deltaY: 0, hoverIndex: index, step: measureStep(panel), panel: panel };
         dragRef.current = next;
         setDrag(next);
         // Document-level listeners catch every move/release — no dependency
@@ -679,7 +702,7 @@ window.__ModuleLoader__.load({
             if (to > from && i > from && i <= to) rowStyle = { transform: "translateY(-" + drag.step + "px)" };
             else if (to < from && i >= to && i < from) rowStyle = { transform: "translateY(" + drag.step + "px)" };
           }
-          return h("div", { className: rowCls, key: m.id, style: rowStyle },
+          return h("div", { className: rowCls, key: m.id, "data-id": m.id, style: rowStyle },
             h("input", {
               type: "checkbox",
               checked: cfg[m.id].enabled,
