@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
       peak: "高峰",
       idle: "空闲",
       settings: "模块设置",
+      close: "关闭",
       moveUp: "上移",
       moveDown: "下移",
       moduleCounts: "轮次/步数",
@@ -65,6 +66,7 @@ window.__ModuleLoader__.load({
       peak: "Peak",
       idle: "Off-peak",
       settings: "Module settings",
+      close: "Close",
       moveUp: "Move up",
       moveDown: "Move down",
       moduleCounts: "Turns · Steps",
@@ -556,10 +558,13 @@ window.__ModuleLoader__.load({
     // -----------------------------------------------------------------------
     // 7. settings popup
     // -----------------------------------------------------------------------
-    function settingsPanel(ctx, cfg) {
+    function settingsPanel(ctx, cfg, onClose) {
       var modules = STAT_MODULES.slice().sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
       return h("div", { className: "dsh-lb-settings" },
-        h("div", { className: "dsh-lb-settings-title" }, ctx.t("settings")),
+        h("div", { className: "dsh-lb-settings-head" },
+          h("span", { className: "dsh-lb-settings-title" }, ctx.t("settings")),
+          h("button", { className: "dsh-lb-settings-close", title: ctx.t("close"), onClick: onClose }, "✕")
+        ),
         modules.map(function (m) {
           return h("div", { className: "dsh-lb-settings-row", key: m.id },
             h("input", {
@@ -620,7 +625,7 @@ window.__ModuleLoader__.load({
           className: "dsh-lb-settings-backdrop",
           onClick: function () { setOpen(false); },
         }));
-        children.push(settingsPanel(ctx, cfg));
+        children.push(settingsPanel(ctx, cfg, function () { setOpen(false); }));
       }
       return h("div", { className: "dsh-lb-stats" }, children);
     }
@@ -634,8 +639,11 @@ window.__ModuleLoader__.load({
       ".dsh-lb-gear{cursor:pointer;opacity:.55;font-size:11px;line-height:1;padding:1px 3px;border-radius:4px;}",
       ".dsh-lb-gear:hover{opacity:1;background:var(--dsw-alias-bg-layer-2);}",
       ".dsh-lb-settings-backdrop{position:fixed;inset:0;z-index:998;}",
-      ".dsh-lb-settings{position:absolute;right:0;top:calc(100% + 6px);z-index:999;min-width:220px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:8px;font-size:12px;}",
-      ".dsh-lb-settings-title{font-weight:600;margin:2px 4px 6px;color:var(--dsw-alias-label-primary);}",
+      ".dsh-lb-settings{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:999;min-width:260px;max-width:90vw;max-height:70vh;overflow:auto;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.28);padding:10px;font-size:12px;}",
+      ".dsh-lb-settings-head{display:flex;align-items:center;justify-content:space-between;margin:2px 4px 6px;color:var(--dsw-alias-label-primary);}",
+      ".dsh-lb-settings-title{font-weight:600;}",
+      ".dsh-lb-settings-close{border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font-size:14px;line-height:1;padding:2px 6px;border-radius:6px;}",
+      ".dsh-lb-settings-close:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);}",
       ".dsh-lb-settings-row{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:6px;}",
       ".dsh-lb-settings-row:hover{background:var(--dsw-alias-bg-layer-1);}",
       ".dsh-lb-settings-name{flex:1;color:var(--dsw-alias-label-secondary);}",
