@@ -94,6 +94,36 @@ function resolvePeakWindows(config) {
   return [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }];
 }
 
+/**
+ * Peak-hour prices per 1M tokens (CNY), from the official DeepSeek pricing
+ * page (Aug 2026). Idle prices are peak * idleFactor (the scheme prices the
+ * idle window at half of peak). deepseek-v4-flash is the harness default.
+ */
+const PRICING_BY_MODEL = {
+  'deepseek-v4-flash': { inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.10, outputPeakPerM: 9.0 },
+  'deepseek-v4-pro': { inputMissPeakPerM: 9.0, inputHitPeakPerM: 0.30, outputPeakPerM: 27.0 },
+  'deepseek-v4-flash-vision-exp': { inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.10, outputPeakPerM: 9.0 },
+};
+
+/** Finite number or a fallback. */
+function numberOr(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** Resolve the pricing table the client uses to estimate session spend. */
+function resolvePricing(config) {
+  const model = (config?.pricing?.model) ?? config?.pricingModel ?? 'deepseek-v4-flash';
+  const base = PRICING_BY_MODEL[model] ?? PRICING_BY_MODEL['deepseek-v4-flash'];
+  const over = (config?.pricing && typeof config.pricing === 'object') ? config.pricing : {};
+  return {
+    model,
+    inputMissPeakPerM: numberOr(over.inputMissPeakPerM, base.inputMissPeakPerM),
+    inputHitPeakPerM: numberOr(over.inputHitPeakPerM, base.inputHitPeakPerM),
+    outputPeakPerM: numberOr(over.outputPeakPerM, base.outputPeakPerM),
+    idleFactor: numberOr(over.idleFactor, 0.5),
+  };
+}
+
 /** Resolve the runtime settings shared by the route and the client meta. */
 function resolveSettings(config) {
   return {
@@ -107,6 +137,7 @@ function resolveSettings(config) {
     // indicator from these; everything outside is idle. Default 09:00–12:00
     // and 14:00–18:00.
     peakWindows: resolvePeakWindows(config),
+    pricing: resolvePricing(config),
   };
 }
 

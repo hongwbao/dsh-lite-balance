@@ -184,5 +184,13 @@ assert(T.isPeak(peakMeta, new Date('2026-08-22T08:59:00+08:00')) === false, '08:
 assert(T.isPeak(peakMeta, new Date('2026-08-22T18:00:00+08:00')) === false, '18:00 Beijing is idle (window end exclusive)');
 assert(T.isPeak({}, new Date('2026-08-22T10:00:00+08:00')) === true, 'defaults to 09:00-12:00/14:00-18:00 when meta absent');
 
+console.log('== client: session spend estimate ==');
+const flashPricing = { model: 'deepseek-v4-flash', inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.1, outputPeakPerM: 9.0, idleFactor: 0.5 };
+const usage = { uncachedInputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 0, outputTokens: 500 };
+assert(Math.abs(T.sessionCost(usage, flashPricing, true) - 0.0076) < 1e-9, 'peak spend = 0.0076 (¥)');
+assert(Math.abs(T.sessionCost(usage, flashPricing, false) - 0.0038) < 1e-9, 'idle spend = half (0.0038)');
+assert(T.sessionCost(usage, null, true) === null, 'no pricing -> null spend');
+assert(T.fmtMoney(0.0076) === '0.0076' && T.fmtMoney(1.2) === '1.20' && T.fmtMoney(0) === '0.00', 'fmtMoney formatting');
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

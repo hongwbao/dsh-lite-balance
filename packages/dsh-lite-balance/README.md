@@ -8,9 +8,9 @@ DSH Web 的轻量余额显示器：在侧边栏底部（设置按钮旁）常驻
 
 ## 功能
 
-- **输入框下方统计条**（替换内置统计）：`轮次/步数 | 缓存命中 | 输入/输出 Token | 余额 | 高峰/空闲`
+- **输入框下方统计条**（替换内置统计）：`轮次/步数 | 缓存命中 | 输入/输出 Token | 消耗 + 余额 | 高峰/空闲`
 - 余额状态配色：`> warnThreshold` 默认色 / `[criticalThreshold, warnThreshold]` 警告色（黄）/ `< criticalThreshold` 危险色（红 + 低余额 toast）
-- 点击余额跳转 DeepSeek 官方充值页；双击余额强制刷新
+- 余额段同时显示**当前会话消耗金额**（按官方费率 × 本会话 Token 用量估算，自动按高峰/空闲计价）与**账户剩余余额**；点击余额跳转充值页、双击强制刷新
 - 高峰/空闲指示（北京时间，默认高峰 09:00–12:00、14:00–18:00，其余空闲；高峰红 / 空闲绿）
 - 自动刷新（默认 60s，可配）
 - 中英双语（跟随 DSH 语言设置）、深浅主题（使用 DSH 的 `--dsw-alias-*` 设计变量）
@@ -48,6 +48,10 @@ dsh plugin --profile web add ./packages/dsh-lite-balance
 | `DEEPSEEK_BALANCE_RECHARGE_URL` | `https://platform.deepseek.com/top_up` | 点击余额跳转的充值地址 |
 | `DEEPSEEK_BALANCE_PEAK_WINDOWS` | `09:00-12:00,14:00-18:00` | 高峰时段（北京时间，逗号分隔多个区间） |
 
+### 消耗金额的费率（默认已按官方 deepseek-v4-flash 定价）
+
+「当前会话消耗」= 本会话 Token 用量 × 官方单价（按高峰/空闲自动计价），默认使用 `deepseek-v4-flash` 的官方价格（高峰：输入未命中 ¥3/1M、命中 ¥0.1/1M、输出 ¥9/1M；空闲为高峰一半）。可用 `config.pricing` 覆盖，或用 `config.pricingModel` 选择内置费率表。
+
 ### 可选：profile 补丁配置
 
 在 `~/.dsh/profiles/web/cordis.patch.yml`（或插件自己的 `cordis.patch.yml`）中：
@@ -66,6 +70,13 @@ dsh plugin --profile web add ./packages/dsh-lite-balance
             end: '12:00'
           - start: '14:00'
             end: '18:00'
+        # 自定义费率（¥/1M tokens，空闲 = 高峰 × idleFactor）
+        # pricingModel: deepseek-v4-flash   # 或 deepseek-v4-pro / deepseek-v4-flash-vision-exp
+        pricing:
+          inputMissPeakPerM: 3.0
+          inputHitPeakPerM: 0.1
+          outputPeakPerM: 9.0
+          idleFactor: 0.5
 ```
 
 ## 使用

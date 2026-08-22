@@ -47,6 +47,8 @@ window.__ModuleLoader__.load({
       statsCounts: "{turns} 轮 · {steps} 步",
       statsCacheHit: "缓存命中 {percent}%",
       statsTokens: "输入 {input} tok · 输出 {output} tok",
+      spent: "消耗 {amount}",
+      balance: "余额 {amount}",
       peak: "高峰",
       idle: "空闲",
     };
@@ -70,6 +72,8 @@ window.__ModuleLoader__.load({
       statsCounts: "{turns} turns · {steps} steps",
       statsCacheHit: "Cache hit {percent}%",
       statsTokens: "In {input} tok · Out {output} tok",
+      spent: "Spent {amount}",
+      balance: "Balance {amount}",
       peak: "Peak",
       idle: "Off-peak",
     };
@@ -174,6 +178,29 @@ window.__ModuleLoader__.load({
       if (n < 1e3) return String(n);
       if (n < 1e6) return scaled(n / 1e3) + "K";
       return scaled(n / 1e6) + "M";
+    }
+    /** Estimate the current session's spend (CNY) from token usage + pricing. */
+    function sessionCost(usage, pricing, peak) {
+      if (!usage || !pricing || typeof pricing !== 'object') return null;
+      var factor = (typeof pricing.idleFactor === 'number' && isFinite(pricing.idleFactor)) ? pricing.idleFactor : 0.5;
+      var peakOf = function (v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; };
+      var missPerTok = peakOf(pricing.inputMissPeakPerM) / 1e6;
+      var hitPerTok = peakOf(pricing.inputHitPeakPerM) / 1e6;
+      var outPerTok = peakOf(pricing.outputPeakPerM) / 1e6;
+      if (!peak) { missPerTok *= factor; hitPerTok *= factor; outPerTok *= factor; }
+      return ((usage.uncachedInputTokens || 0) + (usage.cacheWriteTokens || 0)) * missPerTok
+        + (usage.cacheReadTokens || 0) * hitPerTok
+        + (usage.outputTokens || 0) * outPerTok;
+    }
+    /** Money formatting: 2 decimals at/above ¥1, up to 4 below (trim trailing zeros). */
+    function fmtMoney(n) {
+      if (n === null || n === undefined || !isFinite(n)) return "—";
+      if (n >= 1) return n.toFixed(2);
+      if (n <= 0) return "0.00";
+      var s = n.toFixed(4).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+      if (s.indexOf(".") === -1) return s + ".00";
+      if (s.indexOf(".") !== -1 && s.length - s.indexOf(".") - 1 < 2) s = s.toFixed(2);
+      return s;
     }
     /** Round a cache-read ratio to an integer percentage, with positive ties rounded up. */
     function roundedIntegerPercent(cacheReadTokens, denominator) {
@@ -309,15 +336,26 @@ window.__ModuleLoader__.load({
         var color = st === "danger" ? "var(--dsw-alias-state-error-primary)"
           : st === "warn" ? "var(--dsw-alias-state-warn-primary)"
           : "inherit";
+        var sym = symbolOf(d.currency);
+        var peak = isPeak(d.meta);
+        var cost = usage ? sessionCost(usage, d.meta && d.meta.pricing, peak) : null;
+        var inner = [];
+        if (cost !== null && cost > 0) {
+          inner.push(h("span", { style: { color: "inherit" } },
+            t("spent", { amount: sym + fmtMoney(cost) })));
+          inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
+        }
+        inner.push(h("span", { style: { color: color, fontWeight: 500 } },
+          t("balance", { amount: sym + fmt(d.total) })));
         balanceSeg = h("span", {
-          style: { color: color, cursor: "pointer" },
+          style: { cursor: "pointer" },
           title: tooltipOf(t, state),
           onClick: function (e) {
             if (e.detail >= 2) { refreshBalance(true); return; }
             var url = d.meta && d.meta.rechargeUrl;
             if (url) window.open(url, "_blank", "noopener");
           },
-        }, symbolOf(d.currency) + fmt(d.total));
+        }, inner);
       }
 
       var peakSeg = null;
@@ -437,7 +475,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     exports.apply = apply;
     // internal helpers exposed for the smoke tests (no runtime consumers)
-    exports._test = { deriveCounts, formatTokens, cacheHitPercent, isPeak, statusOf, fmt, symbolOf };
+    exports._test = { deriveCounts, formatTokens, cacheHitPercent, sessionCost, fmtMoney, isPeak, statusOf, fmt, symbolOf };
     return module.exports;
   }
 });
