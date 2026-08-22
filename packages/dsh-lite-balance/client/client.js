@@ -572,7 +572,10 @@ window.__ModuleLoader__.load({
     // -----------------------------------------------------------------------
     // 7. settings popup
     // -----------------------------------------------------------------------
-    function settingsPanel(ctx, cfg, onClose) {
+    function SettingsPanel(props) {
+      var ctx = props.ctx;
+      var cfg = props.cfg;
+      var onClose = props.onClose;
       var modules = STAT_MODULES.slice().sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
       var dragState = useState(null);
       var dragFrom = dragState[0];
@@ -664,7 +667,7 @@ window.__ModuleLoader__.load({
           className: "dsh-lb-settings-backdrop",
           onClick: function () { setOpen(false); },
         }));
-        children.push(settingsPanel(ctx, cfg, function () { setOpen(false); }));
+        children.push(h(SettingsPanel, { ctx: ctx, cfg: cfg, onClose: function () { setOpen(false); } }));
       }
       return h("div", { className: "dsh-lb-stats" }, children);
     }
