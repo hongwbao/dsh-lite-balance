@@ -1,12 +1,12 @@
 /**
  * dsh-lite-balance client half (bundled for the dsh ModuleLoader).
  *
- * One surface, one shared balance store:
- *   conversation.composer.dock (id "stats") — replaces the built-in stats
- *   line with: turns · steps | cache hit | session tokens | spend + balance
- *   (status colored) | peak/idle indicator (Beijing time).
- * Talks to the host route /dsh-lite-balance/balance only; the API key never
- * reaches the browser.
+ * Modular stats line: one shared data context feeds a fixed registry of
+ * self-contained display modules; a thin orchestrator filters, orders and
+ * joins them. Each module owns its own visibility, rendering, click and
+ * tooltip behavior.
+ *
+ *   context (useStatsContext)  ->  modules (STAT_MODULES)  ->  orchestrator
  */
 window.__ModuleLoader__.load({
   id: "dsh-lite-balance",
@@ -24,15 +24,13 @@ window.__ModuleLoader__.load({
     var API_PATH = "/dsh-lite-balance/balance";
     var DEFAULT_REFRESH_MS = 60000;
 
-    // ---------- locale dictionaries (zh / en) ----------
+    // -----------------------------------------------------------------------
+    // 1. locale dictionaries
+    // -----------------------------------------------------------------------
     var zh = {
       label: "余额",
-      loading: "加载中…",
       updatedAt: "更新于 {time}",
       clickRechargeHint: "点击打开充值页",
-      retryHint: "点击重试",
-      missingKey: "未配置 DEEPSEEK_API_KEY（在 host 环境变量或 ~/.dsh/.credentials.yaml 中设置）",
-      fetchFailed: "余额获取失败",
       statsCounts: "{turns} 轮 · {steps} 步",
       statsCacheHit: "缓存命中 {percent}%",
       statsTokens: "输入 {input} tok · 输出 {output} tok",
@@ -43,12 +41,8 @@ window.__ModuleLoader__.load({
     };
     var en = {
       label: "Balance",
-      loading: "Loading…",
       updatedAt: "Updated {time}",
       clickRechargeHint: "Click to top up",
-      retryHint: "Click to retry",
-      missingKey: "DEEPSEEK_API_KEY not configured (set it in ~/.dsh/.credentials.yaml or host env)",
-      fetchFailed: "Failed to fetch balance",
       statsCounts: "{turns} turns · {steps} steps",
       statsCacheHit: "Cache hit {percent}%",
       statsTokens: "In {input} tok · Out {output} tok",
@@ -58,7 +52,9 @@ window.__ModuleLoader__.load({
       idle: "Off-peak",
     };
 
-    // ---------- tiny shared balance store ----------
+    // -----------------------------------------------------------------------
+    // 2. shared balance store + fetch
+    // -----------------------------------------------------------------------
     var store = { phase: "loading", data: null, error: null, code: null };
     var listeners = new Set();
     function setStore(patch) {
@@ -75,7 +71,6 @@ window.__ModuleLoader__.load({
       return store;
     }
 
-    // ---------- fetch (module-level so every surface shares one flight) ----------
     function getBalance(force) {
       return fetch(API_PATH + (force ? "?refresh=1" : ""), { cache: "no-store" })
         .then(function (r) { return r.json(); });
@@ -100,7 +95,9 @@ window.__ModuleLoader__.load({
       });
     }
 
-    // ---------- formatting helpers ----------
+    // -----------------------------------------------------------------------
+    // 3. helpers
+    // -----------------------------------------------------------------------
     function symbolOf(currency) {
       if (currency === "CNY") return "¥";
       if (currency === "USD") return "$";
@@ -110,7 +107,10 @@ window.__ModuleLoader__.load({
       if (n === null || n === undefined || !Number.isFinite(n)) return "—";
       return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
-    /** > warnThreshold 默认色；[criticalThreshold, warnThreshold] 警告色；< criticalThreshold 危险色。 */
+    function fmtMoney(n) {
+      if (n === null || n === undefined || !isFinite(n)) return "0.00";
+      return n.toFixed(2);
+    }
     function statusOf(total, meta) {
       var warn = (meta && meta.warnThreshold != null) ? meta.warnThreshold : 10;
       var crit = (meta && meta.criticalThreshold != null) ? meta.criticalThreshold : 3;
@@ -119,21 +119,6 @@ window.__ModuleLoader__.load({
       if (total <= warn) return "warn";
       return "ok";
     }
-    function tooltipOf(t, state) {
-      if (state.phase === "error") {
-        var text = state.code === "missing-api-key" ? t("missingKey")
-          : state.code === "fetch-failed" ? t("fetchFailed")
-          : (state.error || t("fetchFailed"));
-        return text + " · " + t("retryHint");
-      }
-      if (!state.data) return t("loading");
-      var lines = [];
-      if (state.data.fetchedAt) lines.push(t("updatedAt").replace("{time}", new Date(state.data.fetchedAt).toLocaleTimeString()));
-      lines.push(t("clickRechargeHint"));
-      return lines.join("\n");
-    }
-
-    // ---------- stats-line helpers (turns / steps / tokens / cache / peak) ----------
     function deriveCounts(nodes) {
       var turns = new Set();
       var steps = 0;
@@ -154,12 +139,6 @@ window.__ModuleLoader__.load({
       if (n < 1e6) return scaled(n / 1e3) + "K";
       return scaled(n / 1e6) + "M";
     }
-    /** Money formatting for spend: always 2 decimals. */
-    function fmtMoney(n) {
-      if (n === null || n === undefined || !isFinite(n)) return "0.00";
-      return n.toFixed(2);
-    }
-    /** Round a cache-read ratio to an integer percentage, with positive ties rounded up. */
     function roundedIntegerPercent(cacheReadTokens, denominator) {
       var denominatorQuotient = Math.floor(denominator / 200);
       var denominatorRemainder = denominator % 200;
@@ -173,7 +152,6 @@ window.__ModuleLoader__.load({
       }
       return lower;
     }
-    /** Display-ready cache-hit share of prompt-side input over the whole durable log. */
     function cacheHitPercent(usage) {
       var denominator = billedInputTokens(usage);
       if (denominator === 0) return null;
@@ -228,12 +206,10 @@ window.__ModuleLoader__.load({
         return date.getHours() * 60 + date.getMinutes();
       }
     }
-    /** True while Beijing time falls inside any configured peak window. */
     function isPeak(meta, date) {
       var t = date || new Date();
-      // Weekends (Sat/Sun) are idle-priced all day — never peak.
       var bjDow = new Date(t.getTime() + 8 * 3600000).getUTCDay();
-      if (bjDow === 0 || bjDow === 6) return false;
+      if (bjDow === 0 || bjDow === 6) return false; // weekend: idle all day
       var windows = (meta && Array.isArray(meta.peakWindows) && meta.peakWindows.length > 0)
         ? meta.peakWindows
         : [{ start: "09:00", end: "12:00" }, { start: "14:00", end: "18:00" }];
@@ -243,32 +219,28 @@ window.__ModuleLoader__.load({
         var end = parseHHMM(windows[i] && windows[i].end);
         if (start === null || end === null) continue;
         if (start <= end) { if (now >= start && now < end) return true; }
-        else { if (now >= start || now < end) return true; } // window crosses midnight
+        else { if (now >= start || now < end) return true; }
       }
       return false;
     }
 
-    // ---------- shared styles (theme tokens from the host app) ----------
-    var STYLE_CSS = [
-      ".dsh-lb-stats{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.4;font-variant-numeric:tabular-nums;padding:2px 0 6px;user-select:none;}",
-      ".dsh-lb-stats-sep{opacity:.45;margin:0 1px;}",
-    ].join("");
-
-    // ---------- StatsLine (replaces the built-in composer-dock stats) ----------
-    function StatsLine(props) {
+    // -----------------------------------------------------------------------
+    // 4. shared data context
+    // -----------------------------------------------------------------------
+    function useStatsContext(props) {
       var sessionId = props.sessionId;
       var useSession = props.useSession;
       var useProjection = props.useProjection;
       var t = props.t;
-      var state = useStore();
+      var balance = useStore();
       var nodes = useSession(function (s) { return s.chat.legacy.nodes; });
       var usage = useProjection("tokenUsage");
       var counts = React.useMemo(function () { return deriveCounts(nodes || []); }, [nodes]);
-      var sessionCostState = useState(null); // { cost, priced } | null
+      var sessionCostState = useState(null);
       var sessionCost = sessionCostState[0];
       var setSessionCost = sessionCostState[1];
 
-      // auto-refresh balance + keep the peak/idle indicator fresh across time boundaries
+      // auto-refresh balance + keep peak/idle fresh across time boundaries
       var tick = useState(0)[1];
       useEffect(function () {
         refreshBalance(true);
@@ -279,8 +251,7 @@ window.__ModuleLoader__.load({
         return function () { clearInterval(timer); };
       }, [tick]);
 
-      // per-session spend comes from the HOST (priced per request at arrival
-      // time). Poll it so live generation and peak/off-peak switches show up.
+      // per-session spend comes from the HOST (priced per request at arrival).
       useEffect(function () {
         if (!sessionId) return;
         var cancelled = false;
@@ -299,71 +270,152 @@ window.__ModuleLoader__.load({
         return function () { cancelled = true; clearInterval(timer); };
       }, [sessionId, setSessionCost]);
 
-      var groups = [];
-      if (counts.steps > 0) {
-        groups.push(t("statsCounts", { turns: counts.turns, steps: counts.steps }));
-      }
-      if (usage && billedInputTokens(usage) > 0) {
-        var cacheHit = cacheHitPercent(usage);
-        if (cacheHit !== null) groups.push(t("statsCacheHit", { percent: cacheHit }));
-        groups.push(t("statsTokens", {
-          input: formatTokens(billedInputTokens(usage)),
-          output: formatTokens(usage.outputTokens),
-        }));
-      }
+      var billedInput = usage ? billedInputTokens(usage) : 0;
+      var cacheHit = (usage && billedInput > 0) ? cacheHitPercent(usage) : null;
+      var peak = (balance.data && balance.data.meta) ? isPeak(balance.data.meta) : null;
 
-      var balanceSeg = null;
-      if (state.phase === "ready" && state.data && state.data.total !== null) {
-        var d = state.data;
-        var st = statusOf(d.total, d.meta || {});
-        var color = st === "danger" ? "var(--dsw-alias-state-error-primary)"
-          : st === "warn" ? "var(--dsw-alias-state-warn-primary)"
-          : "inherit";
-        var sym = symbolOf(d.currency);
-        // Spend is always shown (¥0.00 until the host reports usage).
-        var cost = (sessionCost !== null && typeof sessionCost.cost === "number") ? sessionCost.cost : 0;
-        var inner = [];
-        inner.push(h("span", { style: { color: "inherit" } },
-          t("spent", { amount: sym + fmtMoney(cost) })));
-        inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
-        inner.push(h("span", { style: { color: color, fontWeight: 500 } },
-          t("balance", { amount: sym + fmt(d.total) })));
-        balanceSeg = h("span", {
-          style: { cursor: "pointer" },
-          title: tooltipOf(t, state),
-          onClick: function () {
-            var url = d.meta && d.meta.rechargeUrl;
+      return {
+        t: t,
+        sessionId: sessionId,
+        counts: counts,
+        usage: usage || null,
+        billedInput: billedInput,
+        cacheHit: cacheHit,
+        sessionCost: sessionCost,
+        balance: balance,
+        peak: peak,
+        // tools + actions available to every module
+        fmt: fmt,
+        fmtMoney: fmtMoney,
+        formatTokens: formatTokens,
+        symbolOf: symbolOf,
+        statusOf: statusOf,
+        actions: {
+          refreshBalance: refreshBalance,
+          openRecharge: function () {
+            var url = balance.data && balance.data.meta && balance.data.meta.rechargeUrl;
             if (url) window.open(url, "_blank", "noopener");
           },
-        }, inner);
-      }
+        },
+      };
+    }
 
-      var peakSeg = null;
-      if (state.data && state.data.meta) {
-        var peak = isPeak(state.data.meta);
-        peakSeg = h("span", {
-          style: { color: peak ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-state-success-primary)" },
-          title: t("peak") + "/" + t("idle"),
-        }, peak ? t("peak") : t("idle"));
-      }
+    // -----------------------------------------------------------------------
+    // 5. module registry (each module owns its display logic)
+    // -----------------------------------------------------------------------
+    var STAT_MODULES = [
+      {
+        id: "counts",
+        order: 10,
+        enabled: function (ctx) { return ctx.counts.steps > 0; },
+        render: function (ctx) {
+          return h("span", null, ctx.t("statsCounts", { turns: ctx.counts.turns, steps: ctx.counts.steps }));
+        },
+      },
+      {
+        id: "cacheHit",
+        order: 20,
+        enabled: function (ctx) { return ctx.cacheHit !== null; },
+        render: function (ctx) {
+          return h("span", null, ctx.t("statsCacheHit", { percent: ctx.cacheHit }));
+        },
+      },
+      {
+        id: "tokens",
+        order: 30,
+        enabled: function (ctx) { return ctx.usage !== null && ctx.billedInput > 0; },
+        render: function (ctx) {
+          return h("span", null, ctx.t("statsTokens", {
+            input: ctx.formatTokens(ctx.billedInput),
+            output: ctx.formatTokens(ctx.usage.outputTokens),
+          }));
+        },
+      },
+      {
+        id: "wallet",
+        order: 40,
+        enabled: function (ctx) {
+          return ctx.balance.phase === "ready" && ctx.balance.data && ctx.balance.data.total !== null;
+        },
+        render: function (ctx) {
+          var d = ctx.balance.data;
+          var st = ctx.statusOf(d.total, d.meta || {});
+          var color = st === "danger" ? "var(--dsw-alias-state-error-primary)"
+            : st === "warn" ? "var(--dsw-alias-state-warn-primary)"
+            : "inherit";
+          var sym = ctx.symbolOf(d.currency);
+          // Spend is always shown (¥0.00 until the host reports usage).
+          var cost = (ctx.sessionCost !== null && typeof ctx.sessionCost.cost === "number") ? ctx.sessionCost.cost : 0;
+          var inner = [];
+          inner.push(h("span", { style: { color: "inherit" } },
+            ctx.t("spent", { amount: sym + ctx.fmtMoney(cost) })));
+          inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
+          inner.push(h("span", { style: { color: color, fontWeight: 500 } },
+            ctx.t("balance", { amount: sym + ctx.fmt(d.total) })));
+          return h("span", {
+            style: { cursor: "pointer" },
+            title: walletTooltip(ctx),
+            onClick: function () { ctx.actions.openRecharge(); },
+          }, inner);
+        },
+      },
+      {
+        id: "peakIdle",
+        order: 50,
+        enabled: function (ctx) { return ctx.peak !== null; },
+        render: function (ctx) {
+          var peak = ctx.peak;
+          return h("span", {
+            style: { color: peak ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-state-success-primary)" },
+            title: ctx.t("peak") + "/" + ctx.t("idle"),
+          }, peak ? ctx.t("peak") : ctx.t("idle"));
+        },
+      },
+    ];
 
-      if (groups.length === 0 && !balanceSeg && !peakSeg) return null;
+    // wallet's own tooltip: updated-at + click-to-top-up
+    function walletTooltip(ctx) {
+      var d = ctx.balance.data;
+      var lines = [];
+      if (d.fetchedAt) lines.push(ctx.t("updatedAt").replace("{time}", new Date(d.fetchedAt).toLocaleTimeString()));
+      lines.push(ctx.t("clickRechargeHint"));
+      return lines.join("\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. orchestrator
+    // -----------------------------------------------------------------------
+    function StatsLine(props) {
+      var ctx = useStatsContext(props);
+      var visible = STAT_MODULES
+        .filter(function (m) { return m.enabled(ctx); })
+        .sort(function (a, b) { return a.order - b.order; });
+      if (visible.length === 0) return null;
 
       var children = [];
-      var pushGroup = function (seg) {
+      for (var i = 0; i < visible.length; i++) {
+        var seg = visible[i].render(ctx);
+        if (seg === null || seg === undefined) continue;
         if (children.length > 0) {
           children.push(h("span", { className: "dsh-lb-stats-sep", "aria-hidden": true }, "|"), " ");
         }
         children.push(seg);
-      };
-      for (var i = 0; i < groups.length; i++) pushGroup(h("span", null, groups[i]));
-      if (balanceSeg) pushGroup(balanceSeg);
-      if (peakSeg) pushGroup(peakSeg);
+      }
+      if (children.length === 0) return null;
       return h("div", { className: "dsh-lb-stats" }, children);
     }
 
+    // -----------------------------------------------------------------------
+    // 7. styles
+    // -----------------------------------------------------------------------
+    var STYLE_CSS = [
+      ".dsh-lb-stats{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.4;font-variant-numeric:tabular-nums;padding:2px 0 6px;user-select:none;}",
+      ".dsh-lb-stats-sep{opacity:.45;margin:0 1px;}",
+    ].join("");
 
-    // ---------- plugin definition ----------
+    // -----------------------------------------------------------------------
+    // 8. plugin definition
+    // -----------------------------------------------------------------------
     var name = "dsh-lite-balance";
     var inject = ["slots", "locale"];
 
@@ -372,10 +424,8 @@ window.__ModuleLoader__.load({
       ctx.locale.register(NS, "en", en);
       var t = ctx.locale.bind(NS);
 
-      // id "stats" is the shipped StatsLine cell. Same-id entries may coexist
-      // at DIFFERENT priorities, and the slot registry renders the LOWEST
-      // priority one (entriesOfSlot dedupes by id after ascending sort) — so
-      // priority -1 shadows the built-in (which sits at the default 0).
+      // id "stats" is the shipped StatsLine cell; priority -1 shadows it
+      // (lowest renders per the slot registry's entriesOfSlot dedupe).
       ctx.slots.inject("conversation.composer.dock", function () {
         return ctx.slots.register(
           {
@@ -390,7 +440,6 @@ window.__ModuleLoader__.load({
           StatsLine
         );
       });
-
 
       ctx.effect(function () {
         var tag = document.createElement("style");
