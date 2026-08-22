@@ -611,13 +611,21 @@ window.__ModuleLoader__.load({
       // happens. Idempotent thanks to dragRef being cleared on the first hit.
       useEffect(function () {
         if (drag === null) return;
+        var onMouseUpFallback = function () { commitDrag(); };
+        var onBlur = function () { cancelDrag(); };
         window.addEventListener("pointerup", commitDrag);
         window.addEventListener("pointercancel", cancelDrag);
         window.addEventListener("lostpointercapture", commitDrag);
+        // Fallbacks for releases the browser does not surface as pointerup
+        // (e.g. pointer released outside the window, focus lost mid-drag).
+        window.addEventListener("blur", onBlur);
+        document.addEventListener("mouseup", onMouseUpFallback, true);
         return function () {
           window.removeEventListener("pointerup", commitDrag);
           window.removeEventListener("pointercancel", cancelDrag);
           window.removeEventListener("lostpointercapture", commitDrag);
+          window.removeEventListener("blur", onBlur);
+          document.removeEventListener("mouseup", onMouseUpFallback, true);
         };
       }, [drag]);
 
@@ -635,7 +643,11 @@ window.__ModuleLoader__.load({
       function handleMove(e) {
         var d = dragRef.current;
         if (d === null) return;
-        var deltaY = e.clientY - d.startY;
+        var raw = e.clientY - d.startY;
+        // Keep the dragged row inside the list: clamp to the first/last slot.
+        var minDelta = -(d.index) * d.step;
+        var maxDelta = (modules.length - 1 - d.index) * d.step;
+        var deltaY = Math.max(minDelta, Math.min(maxDelta, raw));
         var hoverIndex = Math.max(0, Math.min(modules.length - 1, d.index + Math.round(deltaY / d.step)));
         if (hoverIndex !== d.hoverIndex || deltaY !== d.deltaY) {
           var next = Object.assign({}, d, { deltaY: deltaY, hoverIndex: hoverIndex });
@@ -676,6 +688,7 @@ window.__ModuleLoader__.load({
               onPointerMove: handleMove,
               onPointerUp: handleUp,
               onPointerCancel: handleCancel,
+              onLostPointerCapture: handleUp,
             }, "⠿"),
             h("button", {
               className: "dsh-lb-settings-btn",
