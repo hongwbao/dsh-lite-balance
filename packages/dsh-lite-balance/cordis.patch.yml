@@ -8,7 +8,7 @@
 #         config:
 #           refreshMs: 60000          # client auto-refresh interval
 #           warnThreshold: 10         # below this balance turns warning color
-#           criticalThreshold: 3      # below this balance turns danger + toast
+#           criticalThreshold: 3      # below this balance turns danger color
 #           rechargeUrl: https://platform.deepseek.com/top_up
 #           peakWindows:              # 高峰时段（北京时间），其余为空闲
 #             - { start: '09:00', end: '12:00' }

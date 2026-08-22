@@ -135,12 +135,10 @@ const fakeClientCtx = {
   effect(fn) { const d = fn(); if (typeof d === 'function') d(); },
 };
 clientMod.apply(fakeClientCtx);
-assert(Object.keys(injections).sort().join(',') === 'conversation.composer.dock,shell.overlay', 'injects into composer dock + overlay (sidebar chip removed)');
+assert(Object.keys(injections).sort().join(',') === 'conversation.composer.dock', 'injects only into composer dock (toast/overlay removed)');
 for (const cb of Object.values(injections)) cb();
 const chip = registrations.find((r) => r.opts.id === 'dsh-lite-balance');
-const toast = registrations.find((r) => r.opts.id === 'dsh-lite-balance-toast');
 assert(chip === undefined, 'sidebar footer chip registration removed');
-assert(toast && toast.opts.name === 'shell.overlay', 'toast registered in shell.overlay');
 
 const stats = registrations.find((r) => r.opts.id === 'stats');
 assert(stats && stats.opts.name === 'conversation.composer.dock' && stats.opts.priority === -1 && typeof stats.comp === 'function', 'shadows built-in stats: composer.dock id "stats" at priority -1');

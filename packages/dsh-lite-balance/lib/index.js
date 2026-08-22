@@ -157,19 +157,6 @@ export function costOf(model, usage, atMs, peakWindows = DEFAULT_PEAK_WINDOWS) {
   return (input + cacheWrite + cacheRead + output) / 1e6;
 }
 
-/** Merge plugin pricing overrides into the latest (peak/off-peak) policy. */
-function applyPricingOverrides(policies, pricing) {
-  const out = policies.map((p) => ({ ...p, models: { ...p.models } }));
-  const last = out[out.length - 1];
-  if (!last.peakOffPeak || !last.models[pricing.model]) return out;
-  const idle = numberOr(pricing.idleFactor, 0.5);
-  last.models[pricing.model] = {
-    cacheHit: [numberOr(pricing.inputHitPeakPerM, 0) * idle, numberOr(pricing.inputHitPeakPerM, 0)],
-    input: [numberOr(pricing.inputMissPeakPerM, 0) * idle, numberOr(pricing.inputMissPeakPerM, 0)],
-    output: [numberOr(pricing.outputPeakPerM, 0) * idle, numberOr(pricing.outputPeakPerM, 0)],
-  };
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Durable per-session cost store (mirrors the reference wallet store).
@@ -373,7 +360,6 @@ async function fetchBalanceOnce(key) {
 /** Cordis plugin body: watch session usage and mount the balance route. */
 export function apply(ctx, config) {
   const settings = resolveSettings(config);
-  const policies = applyPricingOverrides(PRICE_POLICIES, settings.pricing);
 
   // Price every official LLM request at the rate active when its usage
   // event arrives — historical spend stays stable across peak/off-peak.

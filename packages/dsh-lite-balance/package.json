@@ -1,7 +1,7 @@
 {
   "name": "dsh-lite-balance",
   "version": "0.2.0",
-  "description": "Lightweight DeepSeek balance display for the dsh web GUI: replaces the composer stats line with turns/steps · cache hit · session tokens · session spend (per-request priced at arrival, persisted) + balance (status colored) · peak/idle, plus a low-balance alert and one-click top-up. · 轻量余额显示器：替换输入框下方统计条为 轮次/步数 · 缓存命中 · Token 用量 · 会话消耗（逐笔计价、持久化）+ 余额 · 高峰/空闲，含低余额提醒与一键充值。",
+  "description": "Lightweight DeepSeek balance display for the dsh web GUI: replaces the composer stats line with turns/steps · cache hit · session tokens · session spend (per-request priced at arrival, persisted) + balance (status colored) · peak/idle, click-to-top-up. · 轻量余额显示器：替换输入框下方统计条为 轮次/步数 · 缓存命中 · Token 用量 · 会话消耗（逐笔计价、持久化）+ 余额 · 高峰/空闲，点击一键充值。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

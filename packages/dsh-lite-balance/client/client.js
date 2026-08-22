@@ -1,11 +1,10 @@
 /**
  * dsh-lite-balance client half (bundled for the dsh ModuleLoader).
  *
- * Two surfaces, one shared balance store:
- *   1. conversation.composer.dock (id "stats") — replaces the built-in stats
- *      line with: turns · steps | cache hit | session tokens | balance
- *      (status colored) | peak/idle indicator (Beijing time)
- *   2. shell.overlay — low-balance toast
+ * One surface, one shared balance store:
+ *   conversation.composer.dock (id "stats") — replaces the built-in stats
+ *   line with: turns · steps | cache hit | session tokens | spend + balance
+ *   (status colored) | peak/idle indicator (Beijing time).
  * Talks to the host route /dsh-lite-balance/balance only; the API key never
  * reaches the browser.
  */
@@ -20,7 +19,6 @@ window.__ModuleLoader__.load({
     var h = React.createElement;
     var useState = React.useState;
     var useEffect = React.useEffect;
-    var useRef = React.useRef;
 
     var NS = "dsh-lite-balance";
     var API_PATH = "/dsh-lite-balance/balance";
@@ -30,20 +28,11 @@ window.__ModuleLoader__.load({
     var zh = {
       label: "余额",
       loading: "加载中…",
-      refresh: "刷新",
-      recharge: "充值",
-      title: "DeepSeek 账户余额：",
-      granted: "赠金",
-      toppedUp: "充值",
       updatedAt: "更新于 {time}",
-      clickRechargeHint: "点击打开充值页 · 双击强制刷新",
+      clickRechargeHint: "点击打开充值页",
       retryHint: "点击重试",
       missingKey: "未配置 DEEPSEEK_API_KEY（在 host 环境变量或 ~/.dsh/.credentials.yaml 中设置）",
       fetchFailed: "余额获取失败",
-      lowBalance: "余额不足 {threshold}",
-      toastTitle: "余额不足",
-      toastBody: "当前余额 {amount}，请及时充值",
-      toastRecharge: "去充值",
       statsCounts: "{turns} 轮 · {steps} 步",
       statsCacheHit: "缓存命中 {percent}%",
       statsTokens: "输入 {input} tok · 输出 {output} tok",
@@ -55,20 +44,11 @@ window.__ModuleLoader__.load({
     var en = {
       label: "Balance",
       loading: "Loading…",
-      refresh: "Refresh",
-      recharge: "Top up",
-      title: "DeepSeek account balance: ",
-      granted: "Granted",
-      toppedUp: "Topped up",
       updatedAt: "Updated {time}",
-      clickRechargeHint: "Click to top up · double-click to refresh",
+      clickRechargeHint: "Click to top up",
       retryHint: "Click to retry",
       missingKey: "DEEPSEEK_API_KEY not configured (set it in ~/.dsh/.credentials.yaml or host env)",
       fetchFailed: "Failed to fetch balance",
-      lowBalance: "Low balance: under {threshold}",
-      toastTitle: "Low balance",
-      toastBody: "Current balance {amount} — please top up soon",
-      toastRecharge: "Top up now",
       statsCounts: "{turns} turns · {steps} steps",
       statsCacheHit: "Cache hit {percent}%",
       statsTokens: "In {input} tok · Out {output} tok",
@@ -78,7 +58,7 @@ window.__ModuleLoader__.load({
       idle: "Off-peak",
     };
 
-    // ---------- tiny shared store (stats line / toast stay in sync) ----------
+    // ---------- tiny shared balance store ----------
     var store = { phase: "loading", data: null, error: null, code: null };
     var listeners = new Set();
     function setStore(patch) {
@@ -147,13 +127,8 @@ window.__ModuleLoader__.load({
         return text + " · " + t("retryHint");
       }
       if (!state.data) return t("loading");
-      var d = state.data;
-      var sym = symbolOf(d.currency);
-      var lines = [t("title") + sym + fmt(d.total)];
-      if (d.granted !== null || d.toppedUp !== null) {
-        lines.push(t("granted") + " " + sym + fmt(d.granted) + " · " + t("toppedUp") + " " + sym + fmt(d.toppedUp));
-      }
-      if (d.fetchedAt) lines.push(t("updatedAt").replace("{time}", new Date(d.fetchedAt).toLocaleTimeString()));
+      var lines = [];
+      if (state.data.fetchedAt) lines.push(t("updatedAt").replace("{time}", new Date(state.data.fetchedAt).toLocaleTimeString()));
       lines.push(t("clickRechargeHint"));
       return lines.join("\n");
     }
@@ -277,8 +252,6 @@ window.__ModuleLoader__.load({
     var STYLE_CSS = [
       ".dsh-lb-stats{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1.4;font-variant-numeric:tabular-nums;padding:2px 0 6px;user-select:none;}",
       ".dsh-lb-stats-sep{opacity:.45;margin:0 1px;}",
-      ".dsh-lb-toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:9999;display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:0 8px 24px rgba(0,0,0,.18);font-size:12px;pointer-events:auto;}",
-      ".dsh-lb-toast-btn{border:0;border-radius:6px;padding:5px 12px;background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-bg-base);cursor:pointer;font-size:12px;font-weight:600;}",
     ].join("");
 
     // ---------- StatsLine (replaces the built-in composer-dock stats) ----------
@@ -358,8 +331,7 @@ window.__ModuleLoader__.load({
         balanceSeg = h("span", {
           style: { cursor: "pointer" },
           title: tooltipOf(t, state),
-          onClick: function (e) {
-            if (e.detail >= 2) { refreshBalance(true); return; }
+          onClick: function () {
             var url = d.meta && d.meta.rechargeUrl;
             if (url) window.open(url, "_blank", "noopener");
           },
@@ -390,45 +362,6 @@ window.__ModuleLoader__.load({
       return h("div", { className: "dsh-lb-stats" }, children);
     }
 
-    // ---------- LowBalanceToast (frame overlay, danger crossing only) ----------
-    function LowBalanceToast(props) {
-      var t = props.t;
-      var state = useStore();
-      var prevDanger = useRef(false);
-      var visibleState = useState(false);
-      var visible = visibleState[0];
-      var setVisible = visibleState[1];
-      var timerRef = useRef(null);
-
-      var danger = state.phase === "ready" && state.data &&
-        statusOf(state.data.total, state.data.meta || {}) === "danger";
-
-      useEffect(function () {
-        if (danger && !prevDanger.current) {
-          setVisible(true);
-          clearTimeout(timerRef.current);
-          timerRef.current = setTimeout(function () { setVisible(false); }, 8000);
-        }
-        prevDanger.current = danger;
-        return function () { clearTimeout(timerRef.current); };
-      }, [danger, setVisible]);
-
-      if (!visible || !state.data) return null;
-      var d = state.data;
-      var sym = symbolOf(d.currency);
-      var openRecharge = function () {
-        var url = d.meta && d.meta.rechargeUrl;
-        if (url) window.open(url, "_blank", "noopener");
-      };
-      return h("div", { className: "dsh-lb-toast", role: "alert" },
-        h("div", null,
-          h("div", { style: { fontWeight: 600, color: "var(--dsw-alias-state-error-primary)" } }, t("toastTitle")),
-          h("div", { style: { marginTop: 3 } },
-            t("toastBody").replace("{amount}", sym + fmt(d.total)))
-        ),
-        h("button", { className: "dsh-lb-toast-btn", onClick: openRecharge }, t("toastRecharge"))
-      );
-    }
 
     // ---------- plugin definition ----------
     var name = "dsh-lite-balance";
@@ -458,18 +391,6 @@ window.__ModuleLoader__.load({
         );
       });
 
-      ctx.slots.inject("shell.overlay", function () {
-        return ctx.slots.register(
-          {
-            name: "shell.overlay",
-            id: "dsh-lite-balance-toast",
-            order: 100,
-            locale: NS,
-            inject: function () { return { t: ctx.locale.bind(NS) }; },
-          },
-          LowBalanceToast
-        );
-      });
 
       ctx.effect(function () {
         var tag = document.createElement("style");
