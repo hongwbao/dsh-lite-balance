@@ -361,13 +361,13 @@ window.__ModuleLoader__.load({
       notifyConfigChanged();
     }
     /** Move one module to another position (drag & drop), renumbering order. */
-    function reorderModule(fromId, toId) {
+    /** Move one module to an absolute index (live drag swap), renumbering order. */
+    function moveModuleToIndex(id, toIndex) {
       var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return moduleConfig[a].order - moduleConfig[b].order; });
-      var from = ids.indexOf(fromId);
-      var to = ids.indexOf(toId);
-      if (from < 0 || to < 0 || from === to) return;
+      var from = ids.indexOf(id);
+      if (from < 0 || toIndex < 0 || toIndex >= ids.length || from === toIndex) return;
       ids.splice(from, 1);
-      ids.splice(to, 0, fromId);
+      ids.splice(toIndex, 0, id);
       for (var i = 0; i < ids.length; i++) moduleConfig[ids[i]].order = (i + 1) * 10;
       saveModuleConfig();
       notifyConfigChanged();
@@ -577,7 +577,7 @@ window.__ModuleLoader__.load({
       var cfg = props.cfg;
       var onClose = props.onClose;
       var modules = STAT_MODULES.slice().sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
-      var dragState = useState(null); // { id, index, startY, deltaY, hoverIndex, step }
+      var dragState = useState(null); // { id, index, startY, deltaY, step }
       var drag = dragState[0];
       var setDrag = dragState[1];
       // Ref mirror of the drag state so handlers always read the LATEST
@@ -592,26 +592,6 @@ window.__ModuleLoader__.load({
         }
         return 32;
       }
-      /** WYSIWYG drop: the slot whose top is closest to the dragged row. */
-      function dropIndexFromDom(d) {
-        var rows = (d.panel || document).querySelectorAll(".dsh-lb-settings-row");
-        if (rows.length === 0) return d.hoverIndex;
-        var draggedTop = null;
-        var tops = [];
-        for (var i = 0; i < rows.length; i++) {
-          var top = rows[i].offsetTop;
-          tops.push(top);
-          if (rows[i].getAttribute && rows[i].getAttribute("data-id") === d.id) draggedTop = top + d.deltaY;
-        }
-        if (draggedTop === null) return d.hoverIndex;
-        var best = 0;
-        var bestDist = Infinity;
-        for (var j = 0; j < tops.length; j++) {
-          var dist = Math.abs(tops[j] - draggedTop);
-          if (dist < bestDist) { bestDist = dist; best = j; }
-        }
-        return best;
-      }
       function cleanupDragListeners() {
         document.removeEventListener("pointermove", onDocPointerMove);
         document.removeEventListener("pointerup", onDocPointerUp);
@@ -624,20 +604,12 @@ window.__ModuleLoader__.load({
       function onDocPointerCancel() { cleanupDragListeners(); cancelDrag(); }
       function onDocMouseMove(e) { handleMove(e); }
       function onDocMouseUp() { cleanupDragListeners(); commitDrag(); }
+      // Order is committed LIVE during move (each swap writes moduleConfig),
+      // so releasing only clears the visual drag state — nothing to commit.
       function commitDrag() {
-        var d = dragRef.current;
-        if (d === null) return;
+        if (dragRef.current === null) return;
         dragRef.current = null;
-        try {
-          var targetIndex = dropIndexFromDom(d);
-          var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
-          var targetId = ids[targetIndex];
-          if (targetId !== undefined && targetId !== d.id) reorderModule(d.id, targetId);
-        } catch (err) {
-          // a reorder error must never leave the drag stuck
-        } finally {
-          setDrag(null);
-        }
+        setDrag(null);
       }
       function cancelDrag() {
         if (dragRef.current === null) return;
@@ -659,7 +631,7 @@ window.__ModuleLoader__.load({
         var panel = (e.currentTarget && typeof e.currentTarget.closest === "function")
           ? e.currentTarget.closest(".dsh-lb-settings") : null;
         var index = modules.findIndex(function (x) { return x.id === m.id; });
-        var next = { id: m.id, index: index, startY: e.clientY, deltaY: 0, hoverIndex: index, step: measureStep(panel), panel: panel };
+        var next = { id: m.id, index: index, startY: e.clientY, deltaY: 0, step: measureStep(panel) };
         dragRef.current = next;
         setDrag(next);
         // Document-level listeners catch every move/release — no dependency
@@ -673,14 +645,23 @@ window.__ModuleLoader__.load({
       function handleMove(e) {
         var d = dragRef.current;
         if (d === null) return;
-        var raw = e.clientY - d.startY;
-        // Keep the dragged row inside the list: clamp to the first/last slot.
-        var minDelta = -(d.index) * d.step;
-        var maxDelta = (modules.length - 1 - d.index) * d.step;
-        var deltaY = Math.max(minDelta, Math.min(maxDelta, raw));
-        var hoverIndex = Math.max(0, Math.min(modules.length - 1, d.index + Math.round(deltaY / d.step)));
-        if (hoverIndex !== d.hoverIndex || deltaY !== d.deltaY) {
-          var next = Object.assign({}, d, { deltaY: deltaY, hoverIndex: hoverIndex });
+        var deltaY = e.clientY - d.startY;
+        // Live commit: once the pointer crosses half a row, swap with the
+        // neighbor and re-anchor so the dragged row stays under the cursor.
+        while (deltaY > d.step / 2 && d.index < modules.length - 1) {
+          moveModuleToIndex(d.id, d.index + 1);
+          d.index += 1;
+          d.startY += d.step;
+          deltaY -= d.step;
+        }
+        while (deltaY < -d.step / 2 && d.index > 0) {
+          moveModuleToIndex(d.id, d.index - 1);
+          d.index -= 1;
+          d.startY -= d.step;
+          deltaY += d.step;
+        }
+        if (deltaY !== d.deltaY) {
+          var next = Object.assign({}, d, { deltaY: deltaY });
           dragRef.current = next;
           setDrag(next);
         }
@@ -696,13 +677,8 @@ window.__ModuleLoader__.load({
           if (drag !== null && drag.id === m.id) {
             rowCls += " dsh-lb-settings-row--dragging";
             rowStyle = { transform: "translateY(" + drag.deltaY + "px)" };
-          } else if (drag !== null) {
-            var from = drag.index;
-            var to = drag.hoverIndex;
-            if (to > from && i > from && i <= to) rowStyle = { transform: "translateY(-" + drag.step + "px)" };
-            else if (to < from && i >= to && i < from) rowStyle = { transform: "translateY(" + drag.step + "px)" };
           }
-          return h("div", { className: rowCls, key: m.id, "data-id": m.id, style: rowStyle },
+          return h("div", { className: rowCls, key: m.id, style: rowStyle },
             h("input", {
               type: "checkbox",
               checked: cfg[m.id].enabled,
