@@ -646,6 +646,11 @@ window.__ModuleLoader__.load({
         var d = dragRef.current;
         if (d === null) return;
         var deltaY = e.clientY - d.startY;
+        // Constrain the dragged row to the settings list: never above the
+        // first slot or below the last one (pointer may leave, the row stays).
+        var minDelta = -(d.index) * d.step;
+        var maxDelta = (modules.length - 1 - d.index) * d.step;
+        deltaY = Math.max(minDelta, Math.min(maxDelta, deltaY));
         // Live commit: once the pointer crosses half a row, swap with the
         // neighbor and re-anchor so the dragged row stays under the cursor.
         while (deltaY > d.step / 2 && d.index < modules.length - 1) {
