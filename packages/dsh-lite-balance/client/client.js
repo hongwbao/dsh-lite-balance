@@ -580,6 +580,9 @@ window.__ModuleLoader__.load({
       var dragState = useState(null); // { id, index, startY, deltaY, hoverIndex, step }
       var drag = dragState[0];
       var setDrag = dragState[1];
+      // Ref mirror of the drag state so pointer handlers always read the
+      // LATEST drag (no stale-closure races) and can be cleared instantly.
+      var dragRef = React.useRef(null);
 
       function measureStep() {
         var rows = document.querySelectorAll(".dsh-lb-settings .dsh-lb-settings-row");
@@ -589,31 +592,59 @@ window.__ModuleLoader__.load({
         }
         return 32;
       }
+      function commitDrag() {
+        var d = dragRef.current;
+        if (d === null) return;
+        dragRef.current = null;
+        var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
+        var targetId = ids[d.hoverIndex];
+        if (targetId !== undefined && targetId !== d.id) reorderModule(d.id, targetId);
+        setDrag(null);
+      }
+      function cancelDrag() {
+        if (dragRef.current === null) return;
+        dragRef.current = null;
+        setDrag(null);
+      }
+      // Window-level drop safety net: the pointer may leave the handle (or
+      // lose capture), so guarantee the drag ends no matter where the release
+      // happens. Idempotent thanks to dragRef being cleared on the first hit.
+      useEffect(function () {
+        if (drag === null) return;
+        window.addEventListener("pointerup", commitDrag);
+        window.addEventListener("pointercancel", cancelDrag);
+        window.addEventListener("lostpointercapture", commitDrag);
+        return function () {
+          window.removeEventListener("pointerup", commitDrag);
+          window.removeEventListener("pointercancel", cancelDrag);
+          window.removeEventListener("lostpointercapture", commitDrag);
+        };
+      }, [drag]);
+
       function handleDown(m, e) {
         if (e.button !== undefined && e.button !== 0) return;
         e.preventDefault();
         var index = modules.findIndex(function (x) { return x.id === m.id; });
-        setDrag({ id: m.id, index: index, startY: e.clientY, deltaY: 0, hoverIndex: index, step: measureStep() });
+        var next = { id: m.id, index: index, startY: e.clientY, deltaY: 0, hoverIndex: index, step: measureStep() };
+        dragRef.current = next;
+        setDrag(next);
         if (e.currentTarget && typeof e.currentTarget.setPointerCapture === "function") {
           try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
         }
       }
       function handleMove(e) {
-        if (drag === null) return;
-        var deltaY = e.clientY - drag.startY;
-        var hoverIndex = Math.max(0, Math.min(modules.length - 1, drag.index + Math.round(deltaY / drag.step)));
-        if (hoverIndex !== drag.hoverIndex || deltaY !== drag.deltaY) {
-          setDrag(Object.assign({}, drag, { deltaY: deltaY, hoverIndex: hoverIndex }));
+        var d = dragRef.current;
+        if (d === null) return;
+        var deltaY = e.clientY - d.startY;
+        var hoverIndex = Math.max(0, Math.min(modules.length - 1, d.index + Math.round(deltaY / d.step)));
+        if (hoverIndex !== d.hoverIndex || deltaY !== d.deltaY) {
+          var next = Object.assign({}, d, { deltaY: deltaY, hoverIndex: hoverIndex });
+          dragRef.current = next;
+          setDrag(next);
         }
       }
-      function handleUp() {
-        if (drag === null) return;
-        var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
-        var targetId = ids[drag.hoverIndex];
-        if (targetId !== undefined && targetId !== drag.id) reorderModule(drag.id, targetId);
-        setDrag(null);
-      }
-      function handleCancel() { setDrag(null); }
+      function handleUp() { commitDrag(); }
+      function handleCancel() { cancelDrag(); }
       return h("div", { className: "dsh-lb-settings" },
         h("div", { className: "dsh-lb-settings-head" },
           h("span", { className: "dsh-lb-settings-title" }, ctx.t("settings")),
