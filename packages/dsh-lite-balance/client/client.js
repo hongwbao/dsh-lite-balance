@@ -580,8 +580,8 @@ window.__ModuleLoader__.load({
       var dragState = useState(null); // { id, index, startY, deltaY, hoverIndex, step }
       var drag = dragState[0];
       var setDrag = dragState[1];
-      // Ref mirror of the drag state so pointer handlers always read the
-      // LATEST drag (no stale-closure races) and can be cleared instantly.
+      // Ref mirror of the drag state so handlers always read the LATEST
+      // drag (no stale-closure races) and can be cleared instantly.
       var dragRef = React.useRef(null);
 
       function measureStep() {
@@ -592,41 +592,44 @@ window.__ModuleLoader__.load({
         }
         return 32;
       }
+      function cleanupDragListeners() {
+        document.removeEventListener("pointermove", onDocPointerMove);
+        document.removeEventListener("pointerup", onDocPointerUp);
+        document.removeEventListener("pointercancel", onDocPointerCancel);
+        document.removeEventListener("mousemove", onDocMouseMove);
+        document.removeEventListener("mouseup", onDocMouseUp);
+      }
+      function onDocPointerMove(e) { handleMove(e); }
+      function onDocPointerUp() { cleanupDragListeners(); commitDrag(); }
+      function onDocPointerCancel() { cleanupDragListeners(); cancelDrag(); }
+      function onDocMouseMove(e) { handleMove(e); }
+      function onDocMouseUp() { cleanupDragListeners(); commitDrag(); }
       function commitDrag() {
         var d = dragRef.current;
         if (d === null) return;
         dragRef.current = null;
-        var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
-        var targetId = ids[d.hoverIndex];
-        if (targetId !== undefined && targetId !== d.id) reorderModule(d.id, targetId);
-        setDrag(null);
+        try {
+          var ids = Object.keys(DEFAULT_MODULE_CONFIG).sort(function (a, b) { return cfg[a.id].order - cfg[b.id].order; });
+          var targetId = ids[d.hoverIndex];
+          if (targetId !== undefined && targetId !== d.id) reorderModule(d.id, targetId);
+        } catch (err) {
+          // a reorder error must never leave the drag stuck
+        } finally {
+          setDrag(null);
+        }
       }
       function cancelDrag() {
         if (dragRef.current === null) return;
         dragRef.current = null;
+        cleanupDragListeners();
         setDrag(null);
       }
-      // Window-level drop safety net: the pointer may leave the handle (or
-      // lose capture), so guarantee the drag ends no matter where the release
-      // happens. Idempotent thanks to dragRef being cleared on the first hit.
+      // Window blur fallback: release outside the browser window.
       useEffect(function () {
         if (drag === null) return;
-        var onMouseUpFallback = function () { commitDrag(); };
         var onBlur = function () { cancelDrag(); };
-        window.addEventListener("pointerup", commitDrag);
-        window.addEventListener("pointercancel", cancelDrag);
-        window.addEventListener("lostpointercapture", commitDrag);
-        // Fallbacks for releases the browser does not surface as pointerup
-        // (e.g. pointer released outside the window, focus lost mid-drag).
         window.addEventListener("blur", onBlur);
-        document.addEventListener("mouseup", onMouseUpFallback, true);
-        return function () {
-          window.removeEventListener("pointerup", commitDrag);
-          window.removeEventListener("pointercancel", cancelDrag);
-          window.removeEventListener("lostpointercapture", commitDrag);
-          window.removeEventListener("blur", onBlur);
-          document.removeEventListener("mouseup", onMouseUpFallback, true);
-        };
+        return function () { window.removeEventListener("blur", onBlur); };
       }, [drag]);
 
       function handleDown(m, e) {
@@ -636,9 +639,13 @@ window.__ModuleLoader__.load({
         var next = { id: m.id, index: index, startY: e.clientY, deltaY: 0, hoverIndex: index, step: measureStep() };
         dragRef.current = next;
         setDrag(next);
-        if (e.currentTarget && typeof e.currentTarget.setPointerCapture === "function") {
-          try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
-        }
+        // Document-level listeners catch every move/release — no dependency
+        // on pointer capture or effect timing.
+        document.addEventListener("pointermove", onDocPointerMove);
+        document.addEventListener("pointerup", onDocPointerUp);
+        document.addEventListener("pointercancel", onDocPointerCancel);
+        document.addEventListener("mousemove", onDocMouseMove);
+        document.addEventListener("mouseup", onDocMouseUp);
       }
       function handleMove(e) {
         var d = dragRef.current;
@@ -655,8 +662,6 @@ window.__ModuleLoader__.load({
           setDrag(next);
         }
       }
-      function handleUp() { commitDrag(); }
-      function handleCancel() { cancelDrag(); }
       return h("div", { className: "dsh-lb-settings" },
         h("div", { className: "dsh-lb-settings-head" },
           h("span", { className: "dsh-lb-settings-title" }, ctx.t("settings")),
@@ -685,10 +690,6 @@ window.__ModuleLoader__.load({
               className: "dsh-lb-settings-drag",
               title: ctx.t("drag"),
               onPointerDown: function (e) { handleDown(m, e); },
-              onPointerMove: handleMove,
-              onPointerUp: handleUp,
-              onPointerCancel: handleCancel,
-              onLostPointerCapture: handleUp,
             }, "⠿"),
             h("button", {
               className: "dsh-lb-settings-btn",
