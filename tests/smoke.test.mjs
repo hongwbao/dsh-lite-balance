@@ -270,5 +270,21 @@ mod.accumulateSessionCost(s2, { sessionId: 's1', provider: 'third-party-x', mode
 assert(s2.sessions.s1 === undefined, 'non-official provider not priced');
 assert(T.fmtMoney(0.0076) === '0.01' && T.fmtMoney(1.2) === '1.20' && T.fmtMoney(0) === '0.00', 'fmtMoney always 2 decimals');
 
+console.log('== host: 2026-09-10 flash repricing ==');
+const NEW_IDLE = Date.UTC(2026, 8, 10, 5, 0, 0); // Thu 13:00 Beijing -> idle
+const NEW_PEAK = Date.UTC(2026, 8, 10, 7, 0, 0); // Thu 15:00 Beijing -> peak
+const BEFORE = Date.UTC(2026, 8, 10, 3, 0, 0);    // Thu 11:00 Beijing -> still old policy
+assert(mod.isBeijingPeak(NEW_PEAK) === true && mod.isBeijingPeak(NEW_IDLE) === false, 'new-policy timestamps peak/idle as expected');
+const oldRates = mod.ratesFor('deepseek-v4-flash', BEFORE);
+assert(oldRates && oldRates.input === 3 && oldRates.cacheHit === 0.1 && oldRates.output === 9, 'before the switch: flash still {3, 0.1, 9}');
+const newIdle = mod.ratesFor('deepseek-v4-flash', NEW_IDLE);
+assert(newIdle && newIdle.input === 1 && newIdle.cacheHit === 0.02 && newIdle.output === 4, 'new idle: flash {1, 0.02, 4}');
+const newPeak = mod.ratesFor('deepseek-v4-flash', NEW_PEAK);
+assert(newPeak && newPeak.input === 2 && newPeak.cacheHit === 0.04 && newPeak.output === 8, 'new peak: flash = 2x idle {2, 0.04, 8}');
+assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, NEW_IDLE) - 0.00302) < 1e-9, 'new idle spend = 0.00302');
+assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, NEW_PEAK) - 0.00604) < 1e-9, 'new peak spend = 0.00604');
+const proNew = mod.ratesFor('deepseek-v4-pro', NEW_IDLE);
+assert(proNew && proNew.input === 4.5 && proNew.cacheHit === 0.15 && proNew.output === 13.5, 'pro keeps the previous policy (unlisted in the new one)');
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

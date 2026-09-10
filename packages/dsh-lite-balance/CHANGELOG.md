@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Pricing update: deepseek-v4-flash repriced from 2026-09-10 12:00 Beijing — idle cache-hit ¥0.02/1M, cache-miss ¥1/1M, output ¥4/1M; peak = 2× idle. Added as a new entry in the price timeline, so earlier requests keep the 2026-08-17 rates. / 价格更新：flash 系列自 2026-09-10 12:00 起，空闲 ¥0.02/¥1/¥4，高峰为空闲 ×2；作为时间线新条目，早前请求仍按旧价。
+
 ## 0.3.0
 
 - **Extensible**: public module-registration API (`window.__DSH_LITE_BALANCE__.registerModule`) for third-party plugins; config tolerates arbitrary module ids. / 可扩展：公开模块注册 API，配置兼容任意模块 id。

@@ -78,7 +78,7 @@ dsh plugin --profile web add ./packages/dsh-lite-balance
 
 host 端监听 `session/event`（`request/header` 取模型/provider，`assistant/message` 取 token 用量），**每笔请求按其到达时生效的价格计价**——含高峰/空闲、周末、历史费率时间线。`cacheWrite` 按输入（未命中）价计费。会话累计额持久化，重启不丢，跨高峰/空闲或官方调价不会回溯改变。
 
-默认费率表为官方 `deepseek-v4-flash` 价格（高峰：输入未命中 ¥3/1M、命中 ¥0.1/1M、输出 ¥9/1M；空闲半价）。用 `config.pricingModel` 选择其他内置费率表。
+费率按时间线生效，历史会话按当时的价计价。当前 `deepseek-v4-flash`（2026-09-10 12:00 起）：**空闲** 缓存命中 ¥0.02/1M、未命中 ¥1/1M、输出 ¥4/1M；**高峰 = 空闲 ×2**。该切换之前的请求仍按 2026-08-17 的价（空闲 ¥0.05/¥1.5/¥4.5）。用 `config.pricingModel` 选择其他内置费率表。
 
 ## 开发
 

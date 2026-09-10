@@ -78,7 +78,7 @@ Optional environment variables (patch config > env > default):
 
 The host listens to `session/event` (`request/header` for the model/provider, `assistant/message` for token usage) and prices **each request at the rate in effect when its usage arrives** — peak/off-peak, weekends, and a historical price timeline. `cacheWrite` is billed at the input (cache-miss) price. The per-session total is durable, so it survives restarts and never changes retroactively when the peak/off-peak period or prices change.
 
-The default rate table is the official DeepSeek `deepseek-v4-flash` pricing (peak: input-miss ¥3/1M, cache-hit ¥0.1/1M, output ¥9/1M; idle = half). Use `config.pricingModel` to pick another built-in table.
+Pricing follows a timeline, so historical sessions are priced with the rates in effect at the time. Current `deepseek-v4-flash` (since 2026-09-10 12:00 Beijing): **idle** cache-hit ¥0.02/1M, cache-miss ¥1/1M, output ¥4/1M; **peak = 2× idle**. The earlier 2026-08-17 rates (idle ¥0.05/¥1.5/¥4.5) still apply to requests made before that switch. Use `config.pricingModel` to pick another built-in table.
 
 ## Development
 

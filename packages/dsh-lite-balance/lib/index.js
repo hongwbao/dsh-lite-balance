@@ -94,6 +94,18 @@ const PRICE_POLICIES = [
       'deepseek-v4-flash-vision-exp': { cacheHit: [0.05, 0.1], input: [1.5, 3], output: [4.5, 9] },
     },
   },
+  {
+    // 2026-09-10 12:00 Beijing = 2026-09-10T04:00Z. Flash series repriced:
+    // idle cache-hit 0.02, cache-miss 1, output 4 (CNY/1M); peak = 2x idle.
+    // Only the flash series is listed — deepseek-v4-pro keeps the previous
+    // policy (ratesFor takes the latest policy that names the model).
+    since: Date.UTC(2026, 8, 10, 4),
+    peakOffPeak: true,
+    models: {
+      'deepseek-v4-flash': { cacheHit: [0.02, 0.04], input: [1, 2], output: [4, 8] },
+      'deepseek-v4-flash-vision-exp': { cacheHit: [0.02, 0.04], input: [1, 2], output: [4, 8] },
+    },
+  },
 ];
 
 const DEFAULT_PEAK_WINDOWS = [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }];
@@ -273,9 +285,11 @@ function resolvePeakWindows(config) {
  * current rate so a user can see/override it.
  */
 const PRICING_BY_MODEL = {
-  'deepseek-v4-flash': { inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.10, outputPeakPerM: 9.0 },
+  // Since 2026-09-10 12:00 Beijing the flash series is idle 1 / 0.02 / 4 with
+  // peak = 2x idle, so the PEAK table is 2 / 0.04 / 8.
+  'deepseek-v4-flash': { inputMissPeakPerM: 2.0, inputHitPeakPerM: 0.04, outputPeakPerM: 8.0 },
   'deepseek-v4-pro': { inputMissPeakPerM: 9.0, inputHitPeakPerM: 0.30, outputPeakPerM: 27.0 },
-  'deepseek-v4-flash-vision-exp': { inputMissPeakPerM: 3.0, inputHitPeakPerM: 0.10, outputPeakPerM: 9.0 },
+  'deepseek-v4-flash-vision-exp': { inputMissPeakPerM: 2.0, inputHitPeakPerM: 0.04, outputPeakPerM: 8.0 },
 };
 
 function resolvePricing(config) {
