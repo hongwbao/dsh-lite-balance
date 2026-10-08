@@ -436,13 +436,32 @@ window.__ModuleLoader__.load({
     // -----------------------------------------------------------------------
     // 5. shared data context
     // -----------------------------------------------------------------------
+    // The session scope delivers `useChat` / `useProjection` / `sessionId` to
+    // every session-scope slot entry (ui-session's BUILTIN_SOURCE plus ui-chat's
+    // `hooks: ["chat"]` contribution). Names are resolved defensively: a host
+    // that stops delivering one must degrade this stats line, never crash it —
+    // an unguarded call throws during render and blanks the whole dock.
+    var EMPTY_LIST = [];
+    // Fallbacks keep Hook call order stable: they always invoke the selector
+    // against a stable empty snapshot, so a missing prop becomes absent data
+    // rather than a changing Hook order.
+    var EMPTY_SNAPSHOT = { legacy: { nodes: EMPTY_LIST } };
+    function selectorValue(selector, snapshot) {
+      return typeof selector === "function" ? selector(snapshot) : snapshot;
+    }
+    function useFallbackChat(selector) { return selectorValue(selector, EMPTY_SNAPSHOT); }
+    function useFallbackProjection(_key, selector) { return selectorValue(selector, undefined); }
+    function safeHook(hook, fallback) {
+      return typeof hook === "function" ? hook : fallback;
+    }
+
     function useStatsContext(props) {
       var sessionId = props.sessionId;
-      var useSession = props.useSession;
-      var useProjection = props.useProjection;
+      var useChat = safeHook(props.useChat, useFallbackChat);
+      var useProjection = safeHook(props.useProjection, useFallbackProjection);
       var t = props.t;
       var balance = useStore();
-      var nodes = useSession(function (s) { return s.chat.legacy.nodes; });
+      var nodes = useChat(function (s) { return s.legacy.nodes; });
       var usage = useProjection("tokenUsage");
       var projectedStats = useProjection("sessionStats");
       var stats = projectedStats || deriveStats(nodes || []);
