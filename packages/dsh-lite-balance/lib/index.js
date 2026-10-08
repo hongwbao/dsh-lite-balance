@@ -195,7 +195,11 @@ function normalizeStore(value) {
   if (value && typeof value === 'object' && value.sessions && typeof value.sessions === 'object') {
     for (const [id, s] of Object.entries(value.sessions)) {
       if (id === '__proto__' || id === 'prototype') continue;
-      sessions[id] = { cost: numberOr(s?.cost, 0), priced: s?.priced !== false };
+      sessions[id] = {
+        cost: numberOr(s?.cost, 0),
+        priced: s?.priced !== false,
+        unpricedModels: Array.isArray(s?.unpricedModels) ? s.unpricedModels.filter((m) => typeof m === 'string') : [],
+      };
     }
   }
   return { version: 1, sessions };
@@ -246,10 +250,25 @@ export function accumulateSessionCost(target, options, usage, atMs, peakWindows 
   const model = options?.model;
   if (typeof sessionId !== 'string' || sessionId === '') return;
   if (provider !== OFFICIAL_PROVIDER) return;
-  const entry = target.sessions[sessionId] ?? (target.sessions[sessionId] = { cost: 0, priced: true });
+  const entry = target.sessions[sessionId] ?? (target.sessions[sessionId] = { cost: 0, priced: true, unpricedModels: [] });
   const cost = costOf(model, usage, atMs, peakWindows);
-  if (cost === null) { entry.priced = false; return; }
+  if (cost === null) {
+    // Sticky-but-recoverable: record the unpriced model so the UI can explain
+    // WHICH model is unpriced, and so a later priced model clears the flag.
+    // (A permanently sticky flag made a single unpriced request hide the whole
+    // session's spend forever, even after the price table was fixed.)
+    entry.priced = false;
+    if (!Array.isArray(entry.unpricedModels)) entry.unpricedModels = [];
+    if (typeof model === 'string' && model !== '' && !entry.unpricedModels.includes(model)) entry.unpricedModels.push(model);
+    return;
+  }
   entry.cost += cost;
+  if (entry.priced === false) {
+    // A priced model arrived: the session is being billed again, so clear the
+    // flag and the stale model list rather than leaving the wallet greyed out.
+    entry.priced = true;
+    entry.unpricedModels = [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -401,26 +420,41 @@ export function apply(ctx, config) {
   // provider/model route for a request; assistant/message carries the
   // step's final token usage.
   const sessionRoutes = new Map();
+
+  /** Fold one event into the route map / spend store. Shared by the live
+   * listener and the cold-start backfill so both price identically. */
+  const foldEvent = (session, event) => {
+    if (event.type === 'request/header' && event.data?.header?.config) {
+      sessionRoutes.set(session.id, {
+        provider: event.data.header.config.provider,
+        model: event.data.header.config.model,
+      });
+      return;
+    }
+    if (event.type === 'assistant/message' && event.data?.usage !== undefined) {
+      const route = sessionRoutes.get(session.id) ?? {};
+      // `event.time` is the event's own timestamp; `createdAt` is not a field
+      // on session events. Prefer `time` so historical events are priced at the
+      // rate that was actually in effect when they happened.
+      const atMs = typeof event.time === 'number' ? event.time
+        : (typeof event.createdAt === 'number' ? event.createdAt : Date.now());
+      accumulateSessionCost(store, {
+        sessionId: session.id,
+        provider: route.provider ?? 'deepseek-official',
+        model: route.model ?? settings.pricing.model,
+      }, event.data.usage, atMs, settings.peakWindows);
+      capSessions();
+      scheduleSave(ctx.logger);
+    }
+  };
+
   ctx.on('session/event', (session, event) => {
     try {
-      if (event.type === 'request/header' && event.data?.header?.config) {
-        sessionRoutes.set(session.id, {
-          provider: event.data.header.config.provider,
-          model: event.data.header.config.model,
-        });
-        return;
-      }
-      if (event.type === 'assistant/message' && event.data?.usage !== undefined) {
-        const route = sessionRoutes.get(session.id) ?? {};
-        const atMs = typeof event.createdAt === 'number' ? event.createdAt : Date.now();
-        accumulateSessionCost(store, {
-          sessionId: session.id,
-          provider: route.provider ?? 'deepseek-official',
-          model: route.model ?? settings.pricing.model,
-        }, event.data.usage, atMs, settings.peakWindows);
-        capSessions();
-        scheduleSave(ctx.logger);
-      }
+      // Backfill first: on the first event this process sees for a resumed
+      // session, fold its stored log (seed events never publish), then apply
+      // the live event. Both are idempotent per session id.
+      backfillSession(session);
+      foldEvent(session, event);
     } catch (error) {
       if (ctx.logger && typeof ctx.logger.warn === 'function') {
         ctx.logger.warn('dsh-lite-balance: session/event: ' + String(error));
@@ -428,6 +462,44 @@ export function apply(ctx, config) {
     }
   });
 
+  // A resumed Session loads its stored log as SEED events, and seed events
+  // never publish on `session/event`. Live listening alone therefore starts
+  // from a blank slate on every restart: the session's earlier spend is never
+  // counted and the wallet looks frozen at whatever the first live window
+  // produced. Backfill from the canonical log (seq 0) so resumed history is
+  // priced too — the store check keeps this idempotent across re-attaches.
+  const backfilled = new Set();
+  const backfillSession = (session) => {
+    if (session === undefined || typeof session.id !== 'string') return;
+    if (backfilled.has(session.id)) return;
+    // Only ever backfill a session with no recorded spend, so a restart cannot
+    // double-count a log the live listener already folded. A session recorded
+    // by an older version (partial total) is left as-is: its stored cost came
+    // from a subset of these same events, so replaying the log would double it.
+    if (store.sessions[session.id] !== undefined) { backfilled.add(session.id); return; }
+    if (typeof session.snapshotEvents !== 'function') return;
+    let events;
+    try {
+      events = session.snapshotEvents(0, session.seq);
+    } catch {
+      return;
+    }
+    if (!Array.isArray(events) || events.length === 0) return;
+    backfilled.add(session.id);
+    for (const event of events) {
+      try {
+        foldEvent(session, event);
+      } catch (error) {
+        if (ctx.logger && typeof ctx.logger.warn === 'function') {
+          ctx.logger.warn('dsh-lite-balance: backfill: ' + String(error));
+        }
+      }
+    }
+    scheduleSave(ctx.logger);
+  };
+
+  // Backfill runs lazily: the first `session/event` this process sees for a
+  // session triggers it, and it is cheap for an already-backfilled id.
   ctx.inject(['webServer'], (hostCtx) => {
     let cache = null; // { at: number, payload: object }
 
@@ -468,7 +540,15 @@ export function apply(ctx, config) {
       const sessionId = url.searchParams.get('session');
       if (sessionId !== null && sessionId !== '') {
         const entry = store.sessions[sessionId];
-        body.sessionCost = entry ? { cost: entry.cost, priced: entry.priced } : null;
+        body.sessionCost = entry
+          ? {
+              cost: entry.cost,
+              priced: entry.priced,
+              ...(entry.priced === false && Array.isArray(entry.unpricedModels) && entry.unpricedModels.length > 0
+                ? { unpricedModels: entry.unpricedModels }
+                : {}),
+            }
+          : null;
       }
       sendJson(res, 200, body);
     };

@@ -323,5 +323,86 @@ assert(Math.abs(proCur.input - 2 * proNew.input) < 1e-9, 'pro peak is exactly 2x
 assert(mod.ratesFor('deepseek-flash', NEW_PEAK) !== null, 'pricing keys on the model id, not the display name');
 assert(mod.ratesFor('DeepSeek-V41-Flash', NEW_PEAK) === null, 'display name is not a pricing key (falls back, never silently mispriced)');
 
+console.log('== host: unpriced flag is recoverable ==');
+// An unpriced request must not hide the session's spend forever. The old code
+// set `priced: false` and never cleared it, so one unpriced model permanently
+// greyed out the wallet and froze the displayed cost.
+const recoverStore = { version: 1, sessions: {} };
+const optFor = (model) => ({ sessionId: 's-rec', provider: 'deepseek-official', model });
+mod.accumulateSessionCost(recoverStore, optFor('no-such-model'), usage, NEW_PEAK);
+assert(recoverStore.sessions['s-rec'].priced === false, 'unpriced model marks the bucket');
+assert(
+  Array.isArray(recoverStore.sessions['s-rec'].unpricedModels) && recoverStore.sessions['s-rec'].unpricedModels.includes('no-such-model'),
+  'unpriced bucket names the offending model'
+);
+assert(recoverStore.sessions['s-rec'].cost === 0, 'unpriced event adds no cost');
+mod.accumulateSessionCost(recoverStore, optFor('deepseek-flash'), usage, NEW_PEAK);
+assert(recoverStore.sessions['s-rec'].priced === true, 'a later priced model clears the unpriced flag');
+assert(Math.abs(recoverStore.sessions['s-rec'].cost - 0.00604) < 1e-9, 'spend resumes after the flag clears');
+assert(recoverStore.sessions['s-rec'].unpricedModels.length === 0, 'cleared bucket forgets the stale model list');
+// Order-independence: priced first, then unpriced, must still end unpriced.
+const orderStore = { version: 1, sessions: {} };
+mod.accumulateSessionCost(orderStore, optFor('deepseek-flash'), usage, NEW_PEAK);
+mod.accumulateSessionCost(orderStore, optFor('no-such-model'), usage, NEW_PEAK);
+assert(orderStore.sessions['s-rec'].priced === false, 'priced-then-unpriced ends unpriced');
+assert(Math.abs(orderStore.sessions['s-rec'].cost - 0.00604) < 1e-9, 'cost survives the later unpriced event');
+// A non-official provider is not priced and must not touch the bucket at all.
+const foreignStore = { version: 1, sessions: {} };
+mod.accumulateSessionCost(foreignStore, { sessionId: 's-x', provider: 'someone-else', model: 'deepseek-flash' }, usage, NEW_PEAK);
+assert(foreignStore.sessions['s-x'] === undefined, 'non-official provider is ignored entirely');
+
+console.log('== host: resumed-session backfill (seed events never publish) ==');
+// A resumed Session carries its stored log as seed events, which never fire
+// `session/event`. Without a backfill the wallet would only ever count events
+// appended AFTER the restart — the "spend is frozen" symptom. The backfill
+// folds the canonical log on the first live event of that session.
+{
+  const bsid = 'smoke-backfill-' + Date.now();
+  // The route only reaches the sessionCost branch when the balance fetch
+  // succeeds, so re-establish the credential + fetch mocks for this block
+  // (the earlier block restores globalThis.fetch when it finishes).
+  fakeCredentials.resolve = async () => ({ value: 'sk-test', source: 'file' });
+  const realFetchB = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('api.deepseek.com/user/balance')) {
+      return new Response(JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '5.00', granted_balance: '0', topped_up_balance: '5.00' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return realFetchB(url);
+  };
+  // Use a timestamp inside the current flash policy (from 2026-09-10 12:00
+  // Beijing). Before that the model was named `deepseek-v4-flash`, so the
+  // current id legitimately has no rate — that is policy, not a bug.
+  const T0 = Date.UTC(2026, 8, 10, 5, 0, 0); // Thu 13:00 Beijing -> idle
+  const seed = [
+    { type: 'request/header', seq: 0, time: T0, data: { header: { config: { provider: 'deepseek-official', model: 'deepseek-flash' } } } },
+    { type: 'assistant/message', seq: 1, time: T0, data: { usage: { inputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 0, outputTokens: 500 } } },
+    { type: 'assistant/message', seq: 2, time: T0, data: { usage: { inputTokens: 1000, cacheReadTokens: 1000, cacheWriteTokens: 0, outputTokens: 500 } } },
+  ];
+  const resumed = {
+    id: bsid,
+    seq: seed.length,
+    snapshotEvents: (from, to) => seed.slice(from ?? 0, to ?? seed.length),
+  };
+  // One live event after resume (a zero-token step, adds nothing).
+  emit(resumed, { type: 'assistant/message', time: T0, data: { usage: { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } } });
+  const bOut = await call({ method: 'GET', url: '/dsh-lite-balance/balance?session=' + bsid + '&refresh=1' });
+  const got = bOut.body.sessionCost;
+  assert(got !== null, 'resumed session has a cost bucket');
+  // Each seed step at idle: (1000*1 + 1000*0.02 + 500*4)/1e6 = 0.00302.
+  assert(Math.abs(got.cost - 0.00604) < 1e-9, 'backfill prices the resumed session log (got ' + (got && got.cost) + ')');
+  assert(got.priced === true, 'backfilled resumed session is priced');
+  // Idempotence: a second live event must not re-fold the seed log.
+  emit(resumed, { type: 'assistant/message', time: T0, data: { usage: { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } } });
+  const bOut2 = await call({ method: 'GET', url: '/dsh-lite-balance/balance?session=' + bsid + '&refresh=1' });
+  assert(Math.abs(bOut2.body.sessionCost.cost - got.cost) < 1e-12, 'backfill is idempotent across further live events');
+  // A session object with no readable log must not throw.
+  const opaque = { id: bsid + '-opaque' };
+  emit(opaque, { type: 'assistant/message', time: T0, data: { usage: { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 } } });
+  const oOut = await call({ method: 'GET', url: '/dsh-lite-balance/balance?session=' + bsid + '-opaque&refresh=1' });
+  assert(oOut.status === 200, 'a session without snapshotEvents degrades without throwing');
+  globalThis.fetch = realFetchB;
+  fakeCredentials.resolve = async () => undefined;
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

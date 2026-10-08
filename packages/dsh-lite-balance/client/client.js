@@ -38,6 +38,8 @@ window.__ModuleLoader__.load({
       statsTokens: "输入 {input} tok · 输出 {output} tok",
       spent: "消耗 {amount}",
       balance: "余额 {amount}",
+      unpricedModel: "⚠ 本会话有请求未计价（{model}），消耗为下限值",
+      unpricedUnknown: "⚠ 本会话有请求未能计价，消耗为下限值",
       peak: "高峰",
       idle: "空闲",
       settings: "模块设置",
@@ -64,6 +66,8 @@ window.__ModuleLoader__.load({
       statsTokens: "In {input} tok · Out {output} tok",
       spent: "Spent {amount}",
       balance: "Balance {amount}",
+      unpricedModel: "⚠ Some requests in this session are unpriced ({model}); spend is a lower bound",
+      unpricedUnknown: "⚠ Some requests in this session could not be priced; spend is a lower bound",
       peak: "Peak",
       idle: "Off-peak",
       settings: "Module settings",
@@ -606,9 +610,12 @@ window.__ModuleLoader__.load({
             : "inherit";
           var sym = ctx.symbolOf(d.currency);
           var cost = (ctx.sessionCost !== null && typeof ctx.sessionCost.cost === "number") ? ctx.sessionCost.cost : 0;
+          // A session whose requests include an unpriced model has a PARTIAL
+          // total. Showing it bare looks like a frozen/real figure, so mark it.
+          var partial = ctx.sessionCost !== null && ctx.sessionCost.priced === false;
           var inner = [];
           inner.push(h("span", { style: { color: "inherit" } },
-            ctx.t("spent", { amount: sym + ctx.fmtMoney(cost) })));
+            ctx.t("spent", { amount: sym + ctx.fmtMoney(cost) }) + (partial ? "\u2265" : "")));
           inner.push(h("span", { style: { margin: "0 4px", opacity: 0.5 } }, "·"));
           inner.push(h("span", { style: { color: color, fontWeight: 500 } },
             ctx.t("balance", { amount: sym + ctx.fmt(d.total) })));
@@ -634,6 +641,13 @@ window.__ModuleLoader__.load({
       var d = ctx.balance.data;
       var lines = [];
       if (d.fetchedAt) lines.push(ctx.t("updatedAt").replace("{time}", new Date(d.fetchedAt).toLocaleTimeString()));
+      // Explain a partial total instead of leaving a suspiciously static number.
+      if (ctx.sessionCost !== null && ctx.sessionCost.priced === false) {
+        var names = Array.isArray(ctx.sessionCost.unpricedModels) ? ctx.sessionCost.unpricedModels : [];
+        lines.push(names.length > 0
+          ? ctx.t("unpricedModel").replace("{model}", names.join(", "))
+          : ctx.t("unpricedUnknown"));
+      }
       lines.push(ctx.t("clickRechargeHint"));
       return lines.join("\n");
     }
