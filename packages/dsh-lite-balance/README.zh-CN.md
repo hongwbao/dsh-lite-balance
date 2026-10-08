@@ -17,12 +17,88 @@
 
 ## 安装
 
+### 前置条件
+
+| 依赖 | 用途 |
+| --- | --- |
+| **DSH**（`dsh` 命令可用） | 承载插件 |
+| **pnpm** | `dsh plugin` 会把包操作转发给 pnpm |
+| **Node.js >= 20** | host 端运行时 |
+| **DeepSeek API Key** | 查询余额；没有它钱包会显示 ⚠ |
+
+API Key 走 harness 的 credentials 通道，因此**只要 harness 本身能调用模型，就无需额外配置**。否则配置一次即可：
+
 ```bash
-cd /home/hongwbao/repos/dsh-plugins
-dsh plugin --profile web add ./packages/dsh-lite-balance
+# 方式一：在启动 dsh web 的终端里导出
+export DEEPSEEK_API_KEY=sk-xxxxxxxx
+
+# 方式二：写入 harness 凭据文件（所有 profile 共用）
+# 创建 ~/.dsh/.credentials.yaml，内容：
+#   version: 1
+#   refs:
+#     DEEPSEEK_API_KEY: sk-xxxxxxxx
 ```
 
-重启你的 `dsh web` 实例。
+### 方式一 —— 从 Git 仓库安装（推荐）
+
+```bash
+# 1. 克隆
+git clone git@github.com:hongwbao/dsh-lite-balance.git ~/repos/dsh-lite-balance
+# （无 SSH 时用 HTTPS：git clone https://github.com/hongwbao/dsh-lite-balance.git ~/repos/dsh-lite-balance）
+
+# 2. 安装到 web profile
+dsh plugin --profile web add ~/repos/dsh-lite-balance/packages/dsh-lite-balance
+
+# 3. 重启网页端
+dsh web
+```
+
+要装到其他 profile（如 `tui`）就把 `--profile web` 换成 `--profile tui`。
+
+### 方式二 —— 用打包文件安装（无需 git / 离线可用）
+
+适合内网机器，或把插件交给别人：
+
+```bash
+# 在有仓库的机器上
+cd packages/dsh-lite-balance && npm pack        # 生成 dsh-lite-balance-0.3.0.tgz
+
+# 把 .tgz 拷到目标机器，然后
+dsh plugin --profile web add ./dsh-lite-balance-0.3.0.tgz
+dsh web
+```
+
+### 方式三 —— 从 npm 安装（发布后可用）
+
+```bash
+dsh plugin --profile web add dsh-lite-balance
+dsh web
+```
+
+### 验证安装
+
+```bash
+# 插件行应出现在合成后的 profile 里
+dsh --profile web --dump-config | grep -A1 dsh-lite-balance
+
+# host 路由应有响应（503 = 未配置 key，属预期）
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/dsh-lite-balance/balance
+```
+
+然后**重启 `dsh web`**——插件只在全新启动时加载。输入框下方的统计条应显示余额相关模块。
+
+### 升级
+
+```bash
+cd ~/repos/dsh-lite-balance && git pull
+dsh plugin --profile web update dsh-lite-balance   # 或重新执行 add 命令
+```
+
+### 卸载
+
+```bash
+dsh plugin --profile web remove dsh-lite-balance
+```
 
 ## 使用
 

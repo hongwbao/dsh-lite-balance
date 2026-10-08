@@ -17,12 +17,88 @@ A lightweight, **extensible** DeepSeek balance display for the DeepSeek Harness 
 
 ## Install
 
+### Prerequisites
+
+| requirement | why |
+| --- | --- |
+| **DSH** (`dsh` on your PATH) | hosts the plugin |
+| **pnpm** | `dsh plugin` forwards package operations to pnpm |
+| **Node.js >= 20** | host half runtime |
+| **A DeepSeek API key** | balance lookup; without it the wallet shows ⚠ |
+
+The API key is read through the harness credentials seam, so if your harness can already call models there is nothing extra to configure. Otherwise set it once:
+
 ```bash
-cd /home/hongwbao/repos/dsh-plugins
-dsh plugin --profile web add ./packages/dsh-lite-balance
+# either export it in the shell that starts dsh web
+export DEEPSEEK_API_KEY=sk-xxxxxxxx
+
+# or store it for the harness (shared by every dsh profile)
+# create ~/.dsh/.credentials.yaml with:
+#   version: 1
+#   refs:
+#     DEEPSEEK_API_KEY: sk-xxxxxxxx
 ```
 
-Restart your `dsh web` instance.
+### Option 1 — install from the Git repository (recommended)
+
+```bash
+# 1. clone
+git clone git@github.com:hongwbao/dsh-lite-balance.git ~/repos/dsh-lite-balance
+# (HTTPS alternative: git clone https://github.com/hongwbao/dsh-lite-balance.git ~/repos/dsh-lite-balance)
+
+# 2. install the plugin into your web profile
+dsh plugin --profile web add ~/repos/dsh-lite-balance/packages/dsh-lite-balance
+
+# 3. restart the web UI
+dsh web
+```
+
+Use `--profile <name>` with another profile (e.g. `tui`) to install it there instead.
+
+### Option 2 — install from a packed tarball (no git, no network)
+
+Useful for air-gapped machines or handing the plugin to someone else:
+
+```bash
+# on a machine that has the repo
+cd packages/dsh-lite-balance && npm pack        # -> dsh-lite-balance-0.3.0.tgz
+
+# copy the .tgz to the other machine, then
+dsh plugin --profile web add ./dsh-lite-balance-0.3.0.tgz
+dsh web
+```
+
+### Option 3 — install from npm (once published)
+
+```bash
+dsh plugin --profile web add dsh-lite-balance
+dsh web
+```
+
+### Verify the install
+
+```bash
+# the plugin row should appear in the composed profile
+dsh --profile web --dump-config | grep -A1 dsh-lite-balance
+
+# and the host route answers (503 = no key configured, which is expected without one)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3080/dsh-lite-balance/balance
+```
+
+Then restart your `dsh web` instance — the plugin only loads on a fresh boot. The stats line under the composer should now show the balance modules.
+
+### Upgrade
+
+```bash
+cd ~/repos/dsh-lite-balance && git pull
+dsh plugin --profile web update dsh-lite-balance   # or re-run the add command
+```
+
+### Uninstall
+
+```bash
+dsh plugin --profile web remove dsh-lite-balance
+```
 
 ## Usage
 
