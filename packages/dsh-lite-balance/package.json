@@ -1,6 +1,6 @@
 {
   "name": "dsh-lite-balance",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Lightweight, extensible DeepSeek balance display for the dsh web GUI. Replaces the composer stats line with user-configurable modules: turns/steps · duration · speed · cache hit · session tokens · spend+balance · peak/idle, per-request priced & persisted session spend, click-to-top-up. · 轻量、可扩展的 DSH 余额显示器：以可配置模块替换输入框下方统计条（轮次/步数 · 耗时 · 速率 · 缓存命中 · Token 用量 · 消耗+余额 · 高峰/空闲），会话消耗逐笔计价并持久化，点击一键充值。",
   "type": "module",
   "main": "lib/index.js",

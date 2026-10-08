@@ -286,5 +286,36 @@ assert(Math.abs(mod.costOf('deepseek-v4-flash', usage, NEW_PEAK) - 0.00604) < 1e
 const proNew = mod.ratesFor('deepseek-v4-pro', NEW_IDLE);
 assert(proNew && proNew.input === 4.5 && proNew.cacheHit === 0.15 && proNew.output === 13.5, 'pro keeps the previous policy (unlisted in the new one)');
 
+console.log('== host: current official model id (deepseek-flash) ==');
+// The provider and the harness model catalog call the Flash model
+// `deepseek-flash` (DeepSeek-V4.1-Flash); `deepseek-v4-flash` is a retired
+// alias that still routes to the same model at the same price. Both must be
+// priced identically — an unlisted live id makes every request unpriced.
+for (const at of [NEW_IDLE, NEW_PEAK]) {
+  const cur = mod.ratesFor('deepseek-flash', at);
+  const alias = mod.ratesFor('deepseek-v4-flash', at);
+  const vision = mod.ratesFor('deepseek-v4-flash-vision-exp', at);
+  const when = at === NEW_PEAK ? 'peak' : 'idle';
+  assert(cur !== null, 'current id deepseek-flash is priced (' + when + ')');
+  assert(JSON.stringify(cur) === JSON.stringify(alias), 'deepseek-flash rates match the retired v4 alias (' + when + ')');
+  assert(JSON.stringify(cur) === JSON.stringify(vision), 'deepseek-flash rates match the vision alias (' + when + ')');
+}
+const curIdle = mod.ratesFor('deepseek-flash', NEW_IDLE);
+assert(curIdle.input === 1 && curIdle.cacheHit === 0.02 && curIdle.output === 4, 'deepseek-flash idle = {1, 0.02, 4}');
+const curPeak = mod.ratesFor('deepseek-flash', NEW_PEAK);
+assert(curPeak.input === 2 && curPeak.cacheHit === 0.04 && curPeak.output === 8, 'deepseek-flash peak = 2x idle {2, 0.04, 8}');
+assert(Math.abs(mod.costOf('deepseek-flash', usage, NEW_IDLE) - 0.00302) < 1e-9, 'deepseek-flash idle spend = 0.00302');
+assert(Math.abs(mod.costOf('deepseek-flash', usage, NEW_PEAK) - 0.00604) < 1e-9, 'deepseek-flash peak spend = 0.00604');
+// Regression: a live deepseek-flash request must actually accumulate, not mark
+// the session unpriced.
+const flashStore = { version: 1, sessions: {} };
+mod.accumulateSessionCost(flashStore, { sessionId: 's-flash', provider: 'deepseek-official', model: 'deepseek-flash' }, usage, NEW_PEAK);
+assert(flashStore.sessions['s-flash'].priced === true, 'deepseek-flash session bucket stays priced');
+assert(Math.abs(flashStore.sessions['s-flash'].cost - 0.00604) < 1e-9, 'deepseek-flash session bucket accumulates 0.00604');
+// Official Pro rates (current table): peak 0.30 / 9 / 27, idle half of that.
+const proCur = mod.ratesFor('deepseek-v4-pro', NEW_PEAK);
+assert(proCur.cacheHit === 0.3 && proCur.input === 9 && proCur.output === 27, 'pro peak = {9, 0.3, 27}');
+assert(Math.abs(proCur.input - 2 * proNew.input) < 1e-9, 'pro peak is exactly 2x idle');
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

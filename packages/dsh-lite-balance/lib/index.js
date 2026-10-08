@@ -106,6 +106,19 @@ const PRICE_POLICIES = [
       'deepseek-v4-flash-vision-exp': { cacheHit: [0.02, 0.04], input: [1, 2], output: [4, 8] },
     },
   },
+  {
+    // Current official naming. The Flash model is served as DeepSeek-V4.1-Flash
+    // and the provider (and the harness's model catalog) call it `deepseek-flash`;
+    // `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` are retired aliases
+    // that still route to the same model at the same price. Same rates as the
+    // 2026-09-10 policy — this entry exists so the *current* model id resolves,
+    // not to change any number. Without it every live request is unpriced.
+    since: Date.UTC(2026, 8, 10, 4),
+    peakOffPeak: true,
+    models: {
+      'deepseek-flash': { cacheHit: [0.02, 0.04], input: [1, 2], output: [4, 8] },
+    },
+  },
 ];
 
 const DEFAULT_PEAK_WINDOWS = [{ start: '09:00', end: '12:00' }, { start: '14:00', end: '18:00' }];
