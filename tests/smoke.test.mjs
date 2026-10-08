@@ -317,5 +317,11 @@ const proCur = mod.ratesFor('deepseek-v4-pro', NEW_PEAK);
 assert(proCur.cacheHit === 0.3 && proCur.input === 9 && proCur.output === 27, 'pro peak = {9, 0.3, 27}');
 assert(Math.abs(proCur.input - 2 * proNew.input) < 1e-9, 'pro peak is exactly 2x idle');
 
+// The provider's model *id* is `deepseek-flash`; `DeepSeek-V41-Flash` is only
+// its display name. Pricing keys on the id, so the retired-id-free default must
+// not leak into a lookup. Guard both the id and the display name explicitly.
+assert(mod.ratesFor('deepseek-flash', NEW_PEAK) !== null, 'pricing keys on the model id, not the display name');
+assert(mod.ratesFor('DeepSeek-V41-Flash', NEW_PEAK) === null, 'display name is not a pricing key (falls back, never silently mispriced)');
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : '\n' + failures + ' TEST(S) FAILED');
 process.exit(failures === 0 ? 0 : 1);

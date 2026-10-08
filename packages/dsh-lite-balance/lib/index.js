@@ -300,14 +300,19 @@ function resolvePeakWindows(config) {
 const PRICING_BY_MODEL = {
   // Since 2026-09-10 12:00 Beijing the flash series is idle 1 / 0.02 / 4 with
   // peak = 2x idle, so the PEAK table is 2 / 0.04 / 8.
+  //
+  // `deepseek-flash` is the current official id (served as DeepSeek-V4.1-Flash);
+  // `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` are retired aliases
+  // kept so an older config keeps reporting the same numbers.
+  'deepseek-flash': { inputMissPeakPerM: 2.0, inputHitPeakPerM: 0.04, outputPeakPerM: 8.0 },
   'deepseek-v4-flash': { inputMissPeakPerM: 2.0, inputHitPeakPerM: 0.04, outputPeakPerM: 8.0 },
   'deepseek-v4-pro': { inputMissPeakPerM: 9.0, inputHitPeakPerM: 0.30, outputPeakPerM: 27.0 },
   'deepseek-v4-flash-vision-exp': { inputMissPeakPerM: 2.0, inputHitPeakPerM: 0.04, outputPeakPerM: 8.0 },
 };
 
 function resolvePricing(config) {
-  const model = (config?.pricing?.model) ?? config?.pricingModel ?? 'deepseek-v4-flash';
-  const base = PRICING_BY_MODEL[model] ?? PRICING_BY_MODEL['deepseek-v4-flash'];
+  const model = (config?.pricing?.model) ?? config?.pricingModel ?? 'deepseek-flash';
+  const base = PRICING_BY_MODEL[model] ?? PRICING_BY_MODEL['deepseek-flash'];
   const over = (config?.pricing && typeof config.pricing === 'object') ? config.pricing : {};
   return {
     model,
