@@ -45,14 +45,14 @@
     "统计"
   ],
   "license": "MIT",
-  "author": "dsh-plugins contributors",
+  "author": "Hongwei Bao (https://github.com/hongwbao)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/<your-org>/dsh-plugins.git"
+    "url": "git+https://github.com/hongwbao/dsh-lite-balance.git"
   },
-  "homepage": "https://github.com/<your-org>/dsh-plugins/tree/main/packages/dsh-lite-balance",
+  "homepage": "https://github.com/hongwbao/dsh-lite-balance/tree/main/packages/dsh-lite-balance",
   "bugs": {
-    "url": "https://github.com/<your-org>/dsh-plugins/issues"
+    "url": "https://github.com/hongwbao/dsh-lite-balance/issues"
   },
   "engines": {
     "node": ">=20"
